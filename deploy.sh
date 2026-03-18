@@ -28,7 +28,7 @@ SERVICE_NAME="dns-multiplexer"
 PROXY_SCRIPT="dns-mux.py"
 RESOLVERS_FILE="resolvers.txt"
 LOG_DIR="/var/log/dns-multiplexer"
-REPO_RAW_URL="https://raw.githubusercontent.com/anonvector/DNS-Multiplexer/main"
+REPO_RAW_URL="https://raw.githubusercontent.com/arielesfahani/DNS-Multiplexer/main"
 SELF_INSTALL_PATH="/usr/local/bin/dns-mux"
 
 # Defaults
@@ -288,17 +288,67 @@ install_proxy() {
 
     detect_arch
 
-    # Install Go binary
+    # Install Go binary — build from source (preferred) or download pre-built
     GO_BINARY="dns-multiplexer-$BINARY_SUFFIX"
+    BUILT_FROM_SOURCE=false
+
+    # Option 1: Local binary in script directory
     if [[ -f "$SCRIPT_DIR/bin/$GO_BINARY" ]]; then
         cp "$SCRIPT_DIR/bin/$GO_BINARY" "$INSTALL_DIR/dns-multiplexer"
+        print_status "Installed from local: $GO_BINARY"
+
+    # Option 2: Build from source (most reliable — ensures latest fixes)
     else
-        print_status "Downloading $GO_BINARY from repository..."
-        curl -fsSL "$REPO_RAW_URL/bin/$GO_BINARY" -o "$INSTALL_DIR/dns-multiplexer" || {
-            print_error "Failed to download $GO_BINARY"
-            exit 1
-        }
+        # Install Go if not available
+        GO_BIN="go"
+        if ! command -v go &>/dev/null; then
+            print_status "Go not found. Installing Go 1.23.6 for building..."
+            local GO_ARCH="${BINARY_SUFFIX#linux-}"
+            GO_TARBALL="go1.23.6.linux-${GO_ARCH}.tar.gz"
+            GO_TMP=$(mktemp -d)
+            curl -fsSL "https://go.dev/dl/$GO_TARBALL" -o "$GO_TMP/$GO_TARBALL" || {
+                print_warning "Failed to download Go. Trying pre-built binary..."
+                rm -rf "$GO_TMP"
+                GO_BIN=""
+            }
+            if [[ -n "$GO_BIN" ]]; then
+                tar -C "$GO_TMP" -xzf "$GO_TMP/$GO_TARBALL"
+                GO_BIN="$GO_TMP/go/bin/go"
+                export GOPATH="$GO_TMP/gopath"
+                export GOROOT="$GO_TMP/go"
+            fi
+        fi
+
+        if [[ -n "$GO_BIN" ]]; then
+            print_status "Building dns-multiplexer from source..."
+            BUILD_DIR=$(mktemp -d)
+            if git clone --depth 1 https://github.com/arielesfahani/DNS-Multiplexer.git "$BUILD_DIR/repo" 2>/dev/null; then
+                cd "$BUILD_DIR/repo"
+                CGO_ENABLED=0 "$GO_BIN" build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/dns-multiplexer" . 2>&1 && {
+                    BUILT_FROM_SOURCE=true
+                    print_status "Built dns-multiplexer from source ✓"
+                } || {
+                    print_warning "Build failed, trying pre-built binary..."
+                }
+                cd - >/dev/null
+            fi
+            rm -rf "$BUILD_DIR"
+            # Clean up temp Go install
+            [[ -d "${GO_TMP:-}" ]] && rm -rf "$GO_TMP"
+        fi
     fi
+
+    # Option 3: Download pre-built binary (fallback)
+    if [[ ! -f "$INSTALL_DIR/dns-multiplexer" ]] || { [[ "$BUILT_FROM_SOURCE" != "true" ]] && [[ ! -f "$SCRIPT_DIR/bin/$GO_BINARY" ]]; }; then
+        if [[ "$BUILT_FROM_SOURCE" != "true" ]]; then
+            print_status "Downloading $GO_BINARY from repository..."
+            curl -fsSL "$REPO_RAW_URL/bin/$GO_BINARY" -o "$INSTALL_DIR/dns-multiplexer" || {
+                print_error "Failed to download $GO_BINARY. Install Go and re-run, or place the binary in bin/"
+                exit 1
+            }
+        fi
+    fi
+
     chmod +x "$INSTALL_DIR/dns-multiplexer"
     print_status "Installed: $INSTALL_DIR/dns-multiplexer"
 
@@ -501,6 +551,11 @@ create_service() {
                 EXEC_ARGS+=" --tunnel-profile $TUNNEL_PROFILE"
             fi
         fi
+    fi
+
+    # Always tell the service where findns is
+    if [[ -x "$INSTALL_DIR/findns" ]]; then
+        EXEC_ARGS+=" --findns-binary $INSTALL_DIR/findns"
     fi
 
     EXEC_ARGS+=" --cache"
