@@ -213,25 +213,22 @@ detect_arch() {
     print_status "Architecture: $ARCH ($BINARY_SUFFIX)"
 }
 
-check_python3() {
-    if command -v python3 &>/dev/null; then
-        PYTHON_BIN="$(command -v python3)"
-        PY_VERSION="$(python3 --version 2>&1)"
-        print_status "Python3 found: $PY_VERSION"
-    else
-        print_warning "Python3 not found. Installing..."
-        case "$PKG_MGR" in
-            apt) apt-get update -qq && apt-get install -y -qq python3 ;;
-            dnf) dnf install -y -q python3 ;;
-            yum) yum install -y -q python3 ;;
-        esac
-
-        if ! command -v python3 &>/dev/null; then
-            print_error "Failed to install Python3"
-            exit 1
+check_dependencies() {
+    local DEPS=("curl" "git" "ca-certificates")
+    local MISSING=()
+    for dep in "${DEPS[@]}"; do
+        if ! command -v "$dep" &>/dev/null; then
+            MISSING+=("$dep")
         fi
-        PYTHON_BIN="$(command -v python3)"
-        print_status "Python3 installed: $(python3 --version 2>&1)"
+    done
+
+    if [[ ${#MISSING[@]} -gt 0 ]]; then
+        print_status "Installing missing dependencies: ${MISSING[*]}..."
+        case "$PKG_MGR" in
+            apt) apt-get update -qq && apt-get install -y -qq "${MISSING[@]}" ;;
+            dnf) dnf install -y -q "${MISSING[@]}" ;;
+            yum) yum install -y -q "${MISSING[@]}" ;;
+        esac
     fi
 }
 
@@ -939,6 +936,7 @@ main() {
     fi
 
     detect_os
+    check_dependencies
 
     if [[ "$AUTO_MODE" != "true" ]]; then
         interactive_config
