@@ -329,10 +329,15 @@ install_proxy() {
         # Choice A: Build from local directory if we are clearly in the project root
         if [[ -f "go.mod" ]] && grep -q "DNS-Multiplexer" "go.mod"; then
             print_status "Building from local source tree..."
-            CGO_ENABLED=0 "$GO_BIN" build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/dns-multiplexer" . 2>&1 && {
+            # Delete old binary to ensure we don't use a stale one if build fails
+            rm -f "$INSTALL_DIR/dns-multiplexer"
+            CGO_ENABLED=0 "$GO_BIN" build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/dns-multiplexer" . 2>&1 || {
+                print_warning "Local build failed. Checking environment..."
+            }
+            if [[ -f "$INSTALL_DIR/dns-multiplexer" ]]; then
                 BUILT_FROM_SOURCE=true
                 print_status "Built from local source ✓"
-            }
+            fi
         fi
 
         # Choice B: Clone and build if local build failed/not in repo
@@ -340,10 +345,14 @@ install_proxy() {
             BUILD_DIR=$(mktemp -d)
             if git clone --depth 1 https://github.com/arielesfahani/DNS-Multiplexer.git "$BUILD_DIR/repo" 2>/dev/null; then
                 cd "$BUILD_DIR/repo"
-                CGO_ENABLED=0 "$GO_BIN" build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/dns-multiplexer" . 2>&1 && {
+                rm -f "$INSTALL_DIR/dns-multiplexer"
+                CGO_ENABLED=0 "$GO_BIN" build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/dns-multiplexer" . 2>&1 || {
+                    print_warning "GitHub clone build failed."
+                }
+                if [[ -f "$INSTALL_DIR/dns-multiplexer" ]]; then
                     BUILT_FROM_SOURCE=true
                     print_status "Built from GitHub clone ✓"
-                }
+                fi
                 cd - >/dev/null
             fi
             rm -rf "$BUILD_DIR"
@@ -353,20 +362,15 @@ install_proxy() {
         [[ -d "${GO_TMP:-}" ]] && rm -rf "$GO_TMP"
     fi
 
-    # Fallback to pre-built binary if build failed
-    if [[ ! -f "$INSTALL_DIR/dns-multiplexer" ]]; then
+    # Fallback to pre-built binary ONLY if both build attempts failed
+    if [[ "$BUILT_FROM_SOURCE" != "true" ]]; then
         if [[ -f "$SCRIPT_DIR/bin/$GO_BINARY" ]]; then
             cp "$SCRIPT_DIR/bin/$GO_BINARY" "$INSTALL_DIR/dns-multiplexer"
             print_status "Installed from local bin/ (Fallback)"
-        fi
-    fi
-
-    # Option 3: Download pre-built binary (fallback)
-    if [[ ! -f "$INSTALL_DIR/dns-multiplexer" ]] || { [[ "$BUILT_FROM_SOURCE" != "true" ]] && [[ ! -f "$SCRIPT_DIR/bin/$GO_BINARY" ]]; }; then
-        if [[ "$BUILT_FROM_SOURCE" != "true" ]]; then
-            print_status "Downloading $GO_BINARY from repository..."
+        else
+            print_status "Downloading latest pre-built binary..."
             curl -fsSL "$REPO_RAW_URL/bin/$GO_BINARY" -o "$INSTALL_DIR/dns-multiplexer" || {
-                print_error "Failed to download $GO_BINARY. Install Go and re-run, or place the binary in bin/"
+                print_error "All installation methods failed. Please check your internet/proxy."
                 exit 1
             }
         fi
