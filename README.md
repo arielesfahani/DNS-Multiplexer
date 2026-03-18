@@ -16,69 +16,58 @@ The DNS Multiplexer acts as a "Smart Bridge" between your restricted network and
   - **DNS Query Size Mapping**: Limit query length to avoid detection.
   - **Stealth Mode**: Enable advanced obfuscation for NoizeDNS/Sayedns.
 - **Hot-Reloading**: Update your `resolvers.txt` on the fly without restarting the service (via SIGHUP or automated file watcher).
-- **High-Performance Go Engine**: Replaces the legacy Python proxy with a concurrent, low-memory Go implementation.
 
-## 🏗 Architecture
+## 🏗 Architecture & Internal Logic
 
-```mermaid
-graph TD
-    User((User)) -->|SOCKS5 :1080| Tunnel[SlipNet Tunnel]
-    Tunnel -->|DNS Queries| Mux[DNS Multiplexer]
-    
-    subgraph "Smart Routing Engine"
-    Mux -->|Latency Tracking| Pool[Resolver Pool]
-    Pool -->|E2E Verified| R1[Iranian DNS 1]
-    Pool -->|E2E Verified| R2[Iranian DNS 2]
-    Pool -->|E2E Verified| R3[Iranian DNS 3]
-    end
-    
-    subgraph "Verification Engine"
-    Scanner[Auto-Scanner] -->|findns scan| Local[resolvers.txt]
-    Scanner -->|findns scan| Global[7,800+ Iranian DNS]
-    Scanner -.->|Update| Pool
-    end
-    
-    R1 & R2 & R3 -->|UDP/53| VPS[Germany VPS]
-```
+### 1. How it Works (The Flow)
+1.  **Bootstrap**: On startup, the `deploy.sh` script installs the `dns-multiplexer` binary. Even if your server is "blacked out," it uses your laptop's proxy during install to get everything ready.
+2.  **Initial Scan**: The service starts and immediately launches `findns`. It tests your `resolvers.txt` and ~7,800+ other Iranian DNS servers.
+3.  **E2E Verification**: For each server, it attempts a real SOCKS5 handshake to your Germany VPS. Only servers that succeed are added to the "Active Pool."
+4.  **Multiplexing**: When you use the internet, your traffic is split across the **Top 20** fastest resolvers. This makes your traffic pattern look like random DNS noise to the ISP.
+5.  **Steady State**: Every 5 minutes, it re-scans to find even faster servers. Every 10 seconds, it checks if any current servers have died.
 
-## 🛠 Installation
+### 2. Core Components
+- **`dns-multiplexer` (The Brain)**: A high-concurrency Go engine that manages the proxy, the resolver pool, and the scanner lifecycle.
+- **`findns` (The Scout)**: A specialized E2E verification tool that finds working "holes" in the firewall.
+- **`slipnet` (The Runner)**: The underlying tunnel client that handles the encrypted connection to Germany.
+- **`resolvers.txt` (The Map)**: A list of high-quality domestic Iranian DNS (Shecan, Electro, etc.) that we know are usually fast.
 
-The recommended way to install on a fresh Ubuntu server (even during a blackout) is via the `deploy.sh` script.
+## 🛠 What is Modifiable? (Configuration)
+
+The service is highly tunable. Most settings are managed via the Systemd service flags:
+
+| Setting | Flag / File | Default | Why change it? |
+|---------|-------------|---------|----------------|
+| **Tunnel Profile** | `--tunnel-profile` | - | Your `slipnet://` config string. Required. |
+| **MTU** | `--tunnel-mtu` | `512` | Lower (e.g. 128) for very restricted networks; higher (1280) for speed. |
+| **Query Size** | `--tunnel-query-size`| `0` (Auto) | Set to `50` to force small DNS packets that bypass DPI. |
+| **Stealth Mode** | `--tunnel-stealth` | `false` | Enable for NoizeDNS/Sayedns to use advanced obfuscation. |
+| **Scan Interval**| `--scan-interval` | `5m` | Shorter (1m) if the firewall is blocking resolvers quickly. |
+| **Pool Size** | `--scan-top` | `20` | More resolvers = better stealth, but slightly higher latency. |
+| **Resolvers** | `resolvers.txt` | Bundled | Add your own "secret" Iranian DNS servers here for better performance. |
+
+## 📁 File Structure
+
+- `/etc/dns-multiplexer/`: Configuration home.
+  - `resolvers.txt`: Edit this to add/remove DNS servers.
+  - `profile.conf`: Stores your `slipnet://` URI securely.
+- `/usr/local/bin/dns-mux`: The management utility (symlink to `deploy.sh`).
+- `/var/log/dns-multiplexer/dns-mux.log`: The source of truth for debugging.
+
+## 🚀 Deployment
 
 ```bash
-# 1. Clone your fork
-git clone https://github.com/arielesfahani/DNS-Multiplexer.git
-cd DNS-Multiplexer
+# Pull the latest version
+git pull
 
-# 2. Run the deployment (automatic setup)
+# Run the automated installer
 sudo -E bash deploy.sh \
   --auto --tunnel \
-  --profile "slipnet://YOUR_BASE64_PROFILE" \
+  --profile "slipnet://..." \
   --tunnel-mtu 512 \
   --tunnel-query 50 \
   --tunnel-stealth
 ```
-
-*Note: Use `sudo -E` if you are using a proxy on your laptop to jumpstart the server.*
-
-## 6. Management Commands
-
-The script installs a global `dns-mux` command for easy management:
-
-| Command | Description |
-|---------|-------------|
-| `dns-mux --status` | Show service health and active settings |
-| `dns-mux --logs` | Follow real-time logs (findns activity, etc.) |
-| `dns-mux --stats` | Show real-time latency and query stats for all resolvers |
-| `dns-mux --restart` | Restart the multiplexer and tunnel |
-| `dns-mux --scan` | Manually run a `findns` scan for a specific domain |
-| `dns-mux --uninstall` | Completely remove the service and configurations |
-
-## 📁 Configuration
-
-- **Service Logs**: `/var/log/dns-multiplexer/dns-mux.log`
-- **Resolvers List**: `/etc/dns-multiplexer/resolvers.txt`
-- **Service Config**: `/etc/systemd/system/dns-multiplexer.service`
 
 ## ⚖️ License
 
