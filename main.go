@@ -573,12 +573,34 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 	fmt.Printf("  For SSH access: ssh -o ProxyCommand=\"nc -x %s %%h %%p\" user@remote\n", tunnelListen)
 	fmt.Println()
 
+	// Hot-reload resolvers file
+	var reloader *ResolverReloader
+	if resolverFile != "" {
+		reloader = NewResolverReloader(resolverFile, pool, doh, 30*time.Second)
+		reloader.Start()
+	}
+
+	// SIGHUP handler for manual reload
+	sighup := make(chan os.Signal, 1)
+	signal.Notify(sighup, syscall.SIGHUP)
+	go func() {
+		for range sighup {
+			slog.Info("Received SIGHUP, reloading resolvers...")
+			if reloader != nil {
+				reloader.Reload()
+			}
+		}
+	}()
+
 	// Wait for signal
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 
 	slog.Info("Shutting down...")
+	if reloader != nil {
+		reloader.Stop()
+	}
 	tunnelMgr.Stop()
 	autoScanner.Stop()
 	udp.Stop()

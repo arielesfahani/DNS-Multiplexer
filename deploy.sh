@@ -84,13 +84,18 @@ parse_args() {
         --stop)         check_root; systemctl stop "$SERVICE_NAME" && print_status "Stopped"; exit 0 ;;
         --start)        check_root; systemctl start "$SERVICE_NAME" && print_status "Started"; exit 0 ;;
         --logs)         exec tail -f "$LOG_DIR/dns-mux.log" ;;
+        --edit)         check_root; ${EDITOR:-nano} "$CONFIG_DIR/$RESOLVERS_FILE"; exit 0 ;;
         --scan)         shift
                         if [[ -x "$INSTALL_DIR/findns" ]]; then
-                            exec "$INSTALL_DIR/findns" scan "$@"
+                            # Launch findns TUI and suggest saving to the resolvers file
+                            print_status "Launching Interactive findns TUI..."
+                            print_status "PRO TIP: Use 's' in the TUI to save working IPs to $CONFIG_DIR/$RESOLVERS_FILE"
+                            sleep 2
+                            exec "$INSTALL_DIR/findns" -o "$CONFIG_DIR/$RESOLVERS_FILE" "$@"
                         elif [[ -x "$INSTALL_DIR/dns-multiplexer" ]]; then
                             exec "$INSTALL_DIR/dns-multiplexer" --scan "$@"
                         else
-                            print_error "Neither findns nor dns-multiplexer installed. Run deploy first."
+                            print_error "findns not found. Run deploy first."
                             exit 1
                         fi
                         ;;
@@ -127,7 +132,8 @@ parse_args() {
                 echo "  --stop             Stop the service"
                 echo "  --start            Start the service"
                 echo "  --logs             Follow live logs"
-                echo "  --scan [opts]      Scan resolvers for tunnel compatibility"
+                echo "  --edit             Edit the resolvers list manually"
+                echo "  --scan [opts]      Launch Interactive findns TUI scanner"
                 echo ""
                 echo "Install options:"
                 echo "  --auto, -a         Non-interactive install with defaults"
@@ -877,8 +883,12 @@ print_client_config() {
     echo "  dns-mux --restart     Restart the service"
     echo "  dns-mux --stop        Stop the service"
     echo "  dns-mux --logs        Follow live logs"
+    echo "  dns-mux --edit        Edit resolvers list"
+    echo "  dns-mux --scan        Launch Interactive findns TUI"
     echo "  dns-mux --uninstall   Remove everything"
+    echo "  Config:    $CONFIG_DIR"
     echo "  Resolvers: $CONFIG_DIR/$RESOLVERS_FILE"
+    echo "  Verified:  $CONFIG_DIR/verified.txt"
 }
 
 # ─── Stop conflicting services on port 53 ───────────────────────────────────
