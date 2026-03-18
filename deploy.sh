@@ -53,6 +53,7 @@ SCAN_MIN_SCORE=3
 TUNNEL_MTU=0
 TUNNEL_QUERY_SIZE=0
 TUNNEL_STEALTH=false
+DISABLE_AUTO_SCAN=false
 
 # CLI flags
 AUTO_MODE=false
@@ -123,6 +124,7 @@ parse_args() {
             --tunnel-mtu)    shift; TUNNEL_MTU="$1" ;;
             --tunnel-query)  shift; TUNNEL_QUERY_SIZE="$1" ;;
             --tunnel-stealth) TUNNEL_STEALTH=true ;;
+            --no-scan)      DISABLE_AUTO_SCAN=true ;;
             --help|-h)
                 echo "Usage: dns-mux [COMMAND] [OPTIONS]"
                 echo ""
@@ -159,6 +161,7 @@ parse_args() {
                 echo "  --tunnel-mtu N           MTU for tunnel (default: 1280)"
                 echo "  --tunnel-query N         Max DNS query size (default: 0/auto)"
                 echo "  --tunnel-stealth         Enable stealth mode"
+                echo "  --no-scan                Disable automatic background scanning (manual mode)"
                 exit 0
                 ;;
             *) print_error "Unknown option: $1"; exit 1 ;;
@@ -401,6 +404,15 @@ install_proxy() {
         chmod +x "$INSTALL_DIR/slipnet"
         print_status "Installed: $INSTALL_DIR/slipnet"
 
+        # Install dnstt-client-linux (requested for E2E testing)
+        print_status "Downloading dnstt-client-linux from SamNet-dev..."
+        if curl -fsSL "https://github.com/SamNet-dev/findns/releases/download/v0.2.2.1/dnstt-client-linux" -o "$INSTALL_DIR/dnstt-client" 2>/dev/null; then
+            chmod +x "$INSTALL_DIR/dnstt-client"
+            print_status "Installed: $INSTALL_DIR/dnstt-client ✓"
+        else
+            print_warning "Failed to download dnstt-client-linux. Manual install may be required for E2E."
+        fi
+
         # Install sshpass for SSH-chained profiles
         if ! command -v sshpass &>/dev/null; then
             print_status "Installing sshpass for SSH tunneling..."
@@ -578,6 +590,9 @@ create_service() {
         fi
         if [[ "$TUNNEL_STEALTH" == "true" ]]; then
             EXEC_ARGS+=" --tunnel-stealth"
+        fi
+        if [[ "$DISABLE_AUTO_SCAN" == "true" ]]; then
+            EXEC_ARGS+=" --no-scan"
         fi
     fi
 

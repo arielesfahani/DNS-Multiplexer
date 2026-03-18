@@ -70,6 +70,7 @@ func main() {
 		tunnelMTU     int
 		tunnelQuery   int
 		tunnelStealth bool
+		noScan        bool
 
 		// findns integration
 		findnsBinary string
@@ -108,6 +109,7 @@ func main() {
 	flag.IntVar(&tunnelMTU, "tunnel-mtu", 512, "MTU for the tunnel interface (default: 512)")
 	flag.IntVar(&tunnelQuery, "tunnel-query-size", 0, "Max DNS query size (0 = auto)")
 	flag.BoolVar(&tunnelStealth, "tunnel-stealth", false, "Enable stealth mode for NoizeDNS/Sayedns")
+	flag.BoolVar(&noScan, "no-scan", false, "Disable automatic DNS resolver scanning (manual mode)")
 	flag.StringVar(&findnsBinary, "findns-binary", "findns", "Path to findns binary for resolver scanning")
 
 	flag.Parse()
@@ -160,7 +162,7 @@ func main() {
 			tunnelType, tunnelDomain, tunnelPubkey, tunnelListen,
 			tunnelBinary, tunnelProfile, scanDomain, scanInterval,
 			scanTop, scanWorkers, tunnelMTU, tunnelQuery, tunnelStealth,
-			findnsBinary, resolverFile)
+			findnsBinary, resolverFile, noScan)
 		return
 	}
 
@@ -308,7 +310,7 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 	tunnelType, tunnelDomain, tunnelPubkey, tunnelListen,
 	tunnelBinary, tunnelProfile, scanDomain, scanInterval string,
 	scanTop, scanWorkers, mtu, querySize int, stealth bool,
-	findnsBinary, resolverFile string) {
+	findnsBinary, resolverFile string, noScan bool) {
 
 	// If tunnel-profile is a file path, read the URI from it
 	if tunnelProfile != "" && !strings.HasPrefix(tunnelProfile, "slipnet://") {
@@ -519,19 +521,29 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 	}
 
 	// Start auto-scanner with findns (preferred) or built-in (fallback)
-	autoScanner := NewAutoScanner(pool, parsed, scanDomain, doh, pubkeyBytes, interval, scanTop, 5000, scanWorkers)
-	if findnsScanner != nil {
-		autoScanner.SetFindNS(findnsScanner, resolverFile)
+	var autoScanner *AutoScanner
+	if !noScan {
+		autoScanner = NewAutoScanner(pool, parsed, scanDomain, doh, pubkeyBytes, interval, scanTop, 5000, scanWorkers)
+		if findnsScanner != nil {
+			autoScanner.SetFindNS(findnsScanner, resolverFile)
+		}
+		autoScanner.Start()
+
+		slog.Info("Scanning DNS resolvers, tunnel will start once enough are found...")
+		autoScanner.WaitReady()
+
+		// When a resolver goes down, trigger a rescan to find a replacement
+		pool.SetOnResolverDown(func() {
+			autoScanner.TriggerRescan()
+		})
+	} else {
+		slog.Info("Automatic scanning disabled. Using manual resolver list.", "file", resolverFile)
+		// Wait for at least one healthy resolver if pool is empty
+		for pool.HealthyCount() == 0 {
+			slog.Warn("No healthy resolvers in pool. Waiting for manual update...", "file", resolverFile)
+			time.Sleep(5 * time.Second)
+		}
 	}
-	autoScanner.Start()
-
-	slog.Info("Scanning DNS resolvers, tunnel will start once enough are found...")
-	autoScanner.WaitReady()
-
-	// When a resolver goes down, trigger a rescan to find a replacement
-	pool.SetOnResolverDown(func() {
-		autoScanner.TriggerRescan()
-	})
 
 	// Use embedded slipnet binary if available and no explicit path was given
 	if tunnelBinary == "slipnet" {
@@ -602,7 +614,9 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 		reloader.Stop()
 	}
 	tunnelMgr.Stop()
-	autoScanner.Stop()
+	if autoScanner != nil {
+		autoScanner.Stop()
+	}
 	udp.Stop()
 	if tcpProxy != nil {
 		tcpProxy.Stop()
