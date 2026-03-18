@@ -67,6 +67,9 @@ func main() {
 		scanMinScore  int
 		scanTop       int
 		scanWorkers   int
+
+		// findns integration
+		findnsBinary string
 	)
 
 	flag.StringVar(&listen, "listen", "0.0.0.0:53", "Listen address:port")
@@ -103,6 +106,7 @@ func main() {
 	flag.IntVar(&scanMinScore, "scan-min-score", 3, "Minimum tunnel compatibility score (0-6) for a resolver to be used")
 	flag.IntVar(&scanTop, "scan-top", 20, "Keep top N resolvers in active pool (0 = keep all qualifying)")
 	flag.IntVar(&scanWorkers, "scan-workers", 200, "Concurrent workers for resolver scanning")
+	flag.StringVar(&findnsBinary, "findns-binary", "findns", "Path to findns binary for resolver scanning")
 
 	flag.Parse()
 
@@ -153,7 +157,7 @@ func main() {
 			cover, coverMin, coverMax, healthCheck, stats,
 			tunnelType, tunnelDomain, tunnelPubkey, tunnelListen,
 			tunnelBinary, tunnelProfile, scanDomain, scanInterval,
-			scanTop, scanWorkers)
+			scanTop, scanWorkers, findnsBinary, resolverFile)
 		return
 	}
 
@@ -249,12 +253,44 @@ func main() {
 		}()
 	}
 
+	// Hot-reload resolvers file
+	var reloader *ResolverReloader
+	watchFile := resolverFile
+	if watchFile == "" {
+		// Find the file that was auto-loaded
+		if exe, err := os.Executable(); err == nil {
+			candidate := filepath.Join(filepath.Dir(exe), "resolvers.txt")
+			if _, err := os.Stat(candidate); err == nil {
+				watchFile = candidate
+			}
+		}
+	}
+	if watchFile != "" {
+		reloader = NewResolverReloader(watchFile, pool, doh, 30*time.Second)
+		reloader.Start()
+	}
+
+	// SIGHUP handler for manual reload
+	sighup := make(chan os.Signal, 1)
+	signal.Notify(sighup, syscall.SIGHUP)
+	go func() {
+		for range sighup {
+			slog.Info("Received SIGHUP, reloading resolvers...")
+			if reloader != nil {
+				reloader.Reload()
+			}
+		}
+	}()
+
 	// Wait for signal
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 
 	slog.Info("Shutting down...")
+	if reloader != nil {
+		reloader.Stop()
+	}
 	udp.Stop()
 	if tcpProxy != nil {
 		tcpProxy.Stop()
@@ -268,7 +304,7 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 	cover bool, coverMin, coverMax float64, healthCheck, stats bool,
 	tunnelType, tunnelDomain, tunnelPubkey, tunnelListen,
 	tunnelBinary, tunnelProfile, scanDomain, scanInterval string,
-	scanTop, scanWorkers int) {
+	scanTop, scanWorkers int, findnsBinary, resolverFile string) {
 
 	// If tunnel-profile is a file path, read the URI from it
 	if tunnelProfile != "" && !strings.HasPrefix(tunnelProfile, "slipnet://") {
@@ -370,9 +406,36 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 	fmt.Printf("  DNS proxy:     %s\n", listen)
 	fmt.Printf("  Upstream:      %s (%d resolvers)\n", modeStr, len(parsed))
 	fmt.Printf("  Scan interval: %s\n", interval)
-	fmt.Printf("  Scan mode:     verify (HMAC challenge-response)\n")
 	fmt.Printf("  Top N:         %d\n", scanTop)
 	fmt.Printf("  Scan workers:  %d\n", scanWorkers)
+
+	// Resolve findns binary (try embedded, then PATH)
+	if findnsBinary == "findns" {
+		if embeddedPath, cleanupDir := extractEmbeddedFindns(); embeddedPath != "" {
+			findnsBinary = embeddedPath
+			defer os.RemoveAll(cleanupDir)
+		}
+	}
+
+	// Configure findns scanner
+	var findnsScanner *FindNSScanner
+	{
+		fs := &FindNSScanner{
+			Binary:  findnsBinary,
+			Domain:  scanDomain,
+			Pubkey:  tunnelPubkey,
+			DoH:     doh,
+			Workers: 10, // e2e scans need low concurrency to avoid overloading dnstt server
+			TopN:    scanTop,
+		}
+		if fs.IsAvailable() {
+			findnsScanner = fs
+			fmt.Printf("  Scanner:       findns (e2e SOCKS5 verification)\n")
+		} else {
+			fmt.Printf("  Scanner:       built-in (connectivity check)\n")
+			slog.Warn("findns binary not found, using built-in scanner", "tried", findnsBinary)
+		}
+	}
 	fmt.Println()
 
 	// Create pool with all resolvers
@@ -433,16 +496,19 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 		}()
 	}
 
-	// Decode pubkey for HMAC verify scanner
-	pubkeyBytes, err := hex.DecodeString(tunnelPubkey)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: invalid public key hex for verify scanner: %v\n", err)
-		os.Exit(1)
+	// Decode pubkey for HMAC verify scanner (fallback if findns unavailable)
+	var pubkeyBytes []byte
+	if decoded, err := hex.DecodeString(tunnelPubkey); err == nil {
+		pubkeyBytes = decoded
+	} else {
+		slog.Warn("Could not decode public key hex for built-in scanner", "err", err)
 	}
 
-	// Start auto-scanner: shuffles resolvers, scans up to 5000 per round using
-	// HMAC challenge-response verification, signals ready once topN verified.
+	// Start auto-scanner with findns (preferred) or built-in (fallback)
 	autoScanner := NewAutoScanner(pool, parsed, scanDomain, doh, pubkeyBytes, interval, scanTop, 5000, scanWorkers)
+	if findnsScanner != nil {
+		autoScanner.SetFindNS(findnsScanner, resolverFile)
+	}
 	autoScanner.Start()
 
 	slog.Info("Scanning DNS resolvers, tunnel will start once enough are found...")

@@ -1,6 +1,6 @@
 module dns-mux
 
-go 1.25.6
+go 1.23.6
 
 require (
 	github.com/miekg/dns v1.1.72 // indirect

@@ -35,3 +35,30 @@ func extractEmbeddedSlipnet() (binPath string, cleanupDir string) {
 	slog.Info("Extracted embedded slipnet binary", "path", path)
 	return path, tmpDir
 }
+
+// extractEmbeddedFindns extracts the bundled findns binary to a temp directory.
+// Returns the path to the extracted binary, or empty string if not embedded.
+// The caller should defer os.RemoveAll on the parent directory of the returned path.
+func extractEmbeddedFindns() (binPath string, cleanupDir string) {
+	data, err := embeddedFS.ReadFile("embedded/findns")
+	if err != nil || len(data) == 0 {
+		return "", ""
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dns-mux-findns-*")
+	if err != nil {
+		slog.Warn("Failed to create temp dir for embedded findns", "err", err)
+		return "", ""
+	}
+
+	path := filepath.Join(tmpDir, "findns")
+	if err := os.WriteFile(path, data, 0755); err != nil {
+		slog.Warn("Failed to extract embedded findns", "err", err)
+		os.RemoveAll(tmpDir)
+		return "", ""
+	}
+
+	slog.Info("Extracted embedded findns binary", "path", path)
+	return path, tmpDir
+}
+

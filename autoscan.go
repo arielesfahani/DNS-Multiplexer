@@ -4,43 +4,53 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-// AutoScanner periodically tests resolvers using HMAC challenge-response
-// verification and selects the top N verified resolvers for the active pool.
+// AutoScanner periodically scans resolvers using findns (preferred) or the
+// built-in connectivity scanner (fallback) and keeps the resolver pool updated.
 //
-// On startup it signals readiness as soon as topN verified resolvers are found,
-// allowing the tunnel to start early without waiting for the full scan.
+// On startup it signals readiness once enough resolvers are found.
 // When a resolver goes down, TriggerRescan() can be called to immediately
 // search for a replacement.
 type AutoScanner struct {
 	pool         *ResolverPool
-	allResolvers []Resolver // full list for re-scanning (never filtered)
+	allResolvers []Resolver // full list for fallback scanning
 	scanDomain   string
 	doh          bool
-	pubkey       []byte // server public key for HMAC verify
+	pubkey       []byte // server public key for HMAC verify (fallback)
+	pubkeyHex    string // hex-encoded pubkey for findns
 	interval     time.Duration
 	topN         int // target count of verified resolvers to keep
-	maxSteps     int // max resolvers to test per scan round (0 = all)
+	maxSteps     int // max resolvers to test per scan round (0 = all, fallback only)
 	workers      int // scan concurrency
 	stopCh       chan struct{}
 	rescanCh     chan struct{} // trigger rescan when a resolver fails
 	readyCh      chan struct{} // closed when first batch of resolvers is ready
 	readyOnce    sync.Once
+
+	// findns integration
+	findns       *FindNSScanner
+	resolverFile string // path to resolvers file for findns -i
 }
 
 func NewAutoScanner(pool *ResolverPool, allResolvers []Resolver, scanDomain string, doh bool,
 	pubkey []byte, interval time.Duration, topN, maxSteps, workers int) *AutoScanner {
+
+	pubkeyHex := ""
+	if len(pubkey) > 0 {
+		pubkeyHex = fmt.Sprintf("%x", pubkey)
+	}
+
 	return &AutoScanner{
 		pool:         pool,
 		allResolvers: allResolvers,
 		scanDomain:   scanDomain,
 		doh:          doh,
 		pubkey:       pubkey,
+		pubkeyHex:    pubkeyHex,
 		interval:     interval,
 		topN:         topN,
 		maxSteps:     maxSteps,
@@ -51,33 +61,39 @@ func NewAutoScanner(pool *ResolverPool, allResolvers []Resolver, scanDomain stri
 	}
 }
 
+// SetFindNS configures the findns scanner for use instead of the built-in scanner.
+func (as *AutoScanner) SetFindNS(scanner *FindNSScanner, resolverFile string) {
+	as.findns = scanner
+	as.resolverFile = resolverFile
+}
+
 // Start launches the initial scan and periodic rescanning in the background.
-// Use WaitReady() to block until the first batch of resolvers is available.
 func (as *AutoScanner) Start() {
+	mode := "built-in"
+	if as.findns != nil && as.findns.IsAvailable() {
+		mode = "findns"
+	}
 	slog.Info("Auto-scanner: starting",
+		"mode", mode,
 		"resolvers", len(as.allResolvers),
 		"domain", as.scanDomain,
 		"workers", as.workers,
 		"top_n", as.topN,
-		"max_steps", as.maxSteps,
 	)
 	go as.run()
 }
 
-// WaitReady blocks until the initial scan has found enough resolvers
-// (or the initial scan completes with whatever it found).
+// WaitReady blocks until the initial scan has found enough resolvers.
 func (as *AutoScanner) WaitReady() {
 	<-as.readyCh
 }
 
 // TriggerRescan requests a background rescan to find replacement resolvers.
-// Non-blocking: drops the request if a rescan is already pending.
 func (as *AutoScanner) TriggerRescan() {
 	select {
 	case as.rescanCh <- struct{}{}:
 		slog.Info("Auto-scanner: rescan triggered by resolver failure")
 	default:
-		// rescan already pending
 	}
 }
 
@@ -106,6 +122,59 @@ func (as *AutoScanner) loop() {
 	}
 }
 
+// initialScan runs the first scan and signals readyCh when resolvers are found.
+func (as *AutoScanner) initialScan() {
+	start := time.Now()
+
+	// Try findns first
+	if as.findns != nil && as.findns.IsAvailable() {
+		slog.Info("Auto-scan: initial scan using findns", "domain", as.scanDomain)
+
+		resolvers, err := as.findns.Scan(as.resolverFile)
+		if err != nil {
+			slog.Warn("findns scan failed, falling back to built-in scanner", "err", err)
+		} else if len(resolvers) > 0 {
+			as.pool.UpdateResolvers(resolvers)
+			slog.Info("Auto-scan: findns initial scan complete",
+				"elapsed", time.Since(start).Round(time.Second),
+				"resolvers", len(resolvers),
+			)
+			as.readyOnce.Do(func() { close(as.readyCh) })
+			return
+		} else {
+			slog.Warn("findns returned no resolvers, falling back to built-in scanner")
+		}
+	}
+
+	// Fallback: built-in verify scanner
+	as.initialScanBuiltin()
+}
+
+// scanAndUpdate runs a periodic rescan round.
+func (as *AutoScanner) scanAndUpdate() {
+	start := time.Now()
+
+	// Try findns first
+	if as.findns != nil && as.findns.IsAvailable() {
+		resolvers, err := as.findns.Scan(as.resolverFile)
+		if err != nil {
+			slog.Warn("findns periodic scan failed, falling back to built-in", "err", err)
+		} else if len(resolvers) > 0 {
+			as.pool.UpdateResolvers(resolvers)
+			slog.Info("Auto-scan: findns periodic scan complete",
+				"elapsed", time.Since(start).Round(time.Second),
+				"resolvers", len(resolvers),
+			)
+			return
+		}
+	}
+
+	// Fallback: built-in scanner
+	as.scanAndUpdateBuiltin()
+}
+
+// ─── Built-in scanner fallback (kept from original) ──────────────────────────
+
 // shuffledResolvers returns a shuffled copy of allResolvers, capped at maxSteps.
 func (as *AutoScanner) shuffledResolvers() []Resolver {
 	shuffled := make([]Resolver, len(as.allResolvers))
@@ -119,12 +188,10 @@ func (as *AutoScanner) shuffledResolvers() []Resolver {
 	return shuffled
 }
 
-// initialScan runs the first scan with early-ready support.
-// It signals readyCh as soon as topN verified resolvers are found.
-func (as *AutoScanner) initialScan() {
+func (as *AutoScanner) initialScanBuiltin() {
 	shuffled := as.shuffledResolvers()
 	start := time.Now()
-	slog.Info("Auto-scan: initial verify scan starting", "testing", len(shuffled), "workers", as.workers)
+	slog.Info("Auto-scan: initial verify scan (built-in)", "testing", len(shuffled), "workers", as.workers)
 
 	results := verifyResolversWithEarlyReady(shuffled, as.scanDomain, as.doh, as.workers,
 		as.topN, as.pubkey, func(ready []Resolver) {
@@ -136,18 +203,16 @@ func (as *AutoScanner) initialScan() {
 	elapsed := time.Since(start)
 	as.processResults(results, elapsed)
 
-	// Ensure ready is signaled even if we didn't reach target
 	as.readyOnce.Do(func() {
 		slog.Warn("Auto-scan: initial scan complete without reaching target, starting with available resolvers")
 		close(as.readyCh)
 	})
 }
 
-// scanAndUpdate runs a rescan round: shuffle, scan up to maxSteps, update pool.
-func (as *AutoScanner) scanAndUpdate() {
+func (as *AutoScanner) scanAndUpdateBuiltin() {
 	shuffled := as.shuffledResolvers()
 	start := time.Now()
-	slog.Info("Auto-scan starting", "testing", len(shuffled), "workers", as.workers)
+	slog.Info("Auto-scan starting (built-in)", "testing", len(shuffled), "workers", as.workers)
 
 	results := verifyResolversQuiet(shuffled, as.scanDomain, as.doh, as.workers, as.pubkey)
 	elapsed := time.Since(start)
@@ -158,12 +223,7 @@ func (as *AutoScanner) scanAndUpdate() {
 // processResults sorts results, selects the best verified resolvers, and updates the pool.
 func (as *AutoScanner) processResults(results []VerifyResult, elapsed time.Duration) {
 	// Sort: verified first, then by latency ascending
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].Verified != results[j].Verified {
-			return results[i].Verified
-		}
-		return results[i].LatencyMs < results[j].LatencyMs
-	})
+	sortVerifyResults(results)
 
 	// Collect verified resolvers, capped at topN
 	var qualified []Resolver
@@ -176,7 +236,7 @@ func (as *AutoScanner) processResults(results []VerifyResult, elapsed time.Durat
 		}
 	}
 
-	// Fall back: if no verified resolvers, take the best working ones
+	// Fallback: if no verified resolvers, take best working ones
 	if len(qualified) == 0 {
 		for _, r := range results {
 			if r.Status == "WORKING" {
@@ -234,5 +294,22 @@ func (as *AutoScanner) processResults(results []VerifyResult, elapsed time.Durat
 	)
 	if len(topList) > 0 {
 		slog.Info("Top verified resolvers", "list", strings.Join(topList, ", "))
+	}
+}
+
+// sortVerifyResults sorts by verified-first, then latency ascending.
+func sortVerifyResults(results []VerifyResult) {
+	for i := 1; i < len(results); i++ {
+		for j := i; j > 0; j-- {
+			swap := false
+			if results[j].Verified && !results[j-1].Verified {
+				swap = true
+			} else if results[j].Verified == results[j-1].Verified && results[j].LatencyMs < results[j-1].LatencyMs {
+				swap = true
+			}
+			if swap {
+				results[j], results[j-1] = results[j-1], results[j]
+			}
+		}
 	}
 }

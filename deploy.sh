@@ -81,7 +81,7 @@ parse_args() {
         --stop)         check_root; systemctl stop "$SERVICE_NAME" && print_status "Stopped"; exit 0 ;;
         --start)        check_root; systemctl start "$SERVICE_NAME" && print_status "Started"; exit 0 ;;
         --logs)         exec tail -f "$LOG_DIR/dns-mux.log" ;;
-        --scan)         shift; exec python3 "$INSTALL_DIR/$PROXY_SCRIPT" --scan "$@" ;;
+        --scan)         shift; exec "$INSTALL_DIR/findns" scan "$@" ;;
     esac
 
     while [[ $# -gt 0 ]]; do
@@ -294,6 +294,21 @@ install_proxy() {
         fi
         chmod +x "$INSTALL_DIR/slipnet"
         print_status "Installed: $INSTALL_DIR/slipnet"
+
+        # Install findns scanner
+        FINDNS_BINARY="findns-$BINARY_SUFFIX"
+        if [[ -f "$SCRIPT_DIR/bin/$FINDNS_BINARY" ]]; then
+            cp "$SCRIPT_DIR/bin/$FINDNS_BINARY" "$INSTALL_DIR/findns"
+        else
+            print_status "Downloading $FINDNS_BINARY from GitHub..."
+            curl -fsSL "https://github.com/SamNet-dev/findns/releases/download/v0.2.2.1/$FINDNS_BINARY" -o "$INSTALL_DIR/findns" || {
+                print_warning "Failed to download findns — built-in scanner will be used instead"
+            }
+        fi
+        if [[ -f "$INSTALL_DIR/findns" ]]; then
+            chmod +x "$INSTALL_DIR/findns"
+            print_status "Installed: $INSTALL_DIR/findns"
+        fi
 
         # Install sshpass for SSH-chained profiles
         if ! command -v sshpass &>/dev/null; then
