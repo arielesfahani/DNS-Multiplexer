@@ -216,6 +216,47 @@ detect_os() {
     print_status "Detected OS: $OS_ID ($PKG_MGR)"
 }
 
+wait_for_apt_lock() {
+    if [[ "$PKG_MGR" != "apt" ]]; then
+        return
+    fi
+    
+    local lock_files=(
+        "/var/lib/dpkg/lock-frontend"
+        "/var/lib/apt/lists/lock"
+        "/var/lib/dpkg/lock"
+    )
+    
+    local locked=false
+    for lock in "${lock_files[@]}"; do
+        if fuser "$lock" >/dev/null 2>&1; then
+            locked=true
+            break
+        fi
+    done
+
+    if [[ "$locked" == "true" ]]; then
+        print_warning "Another package manager process is running (e.g., unattended-upgrades)."
+        print_status "Politely waiting for the lock to be released..."
+        
+        while true; do
+            locked=false
+            for lock in "${lock_files[@]}"; do
+                if fuser "$lock" >/dev/null 2>&1; then
+                    locked=true
+                    break
+                fi
+            done
+            
+            if [[ "$locked" == "false" ]]; then
+                print_status "Lock released. Proceeding..."
+                break
+            fi
+            sleep 5
+        done
+    fi
+}
+
 detect_arch() {
     ARCH="$(uname -m)"
     case "$ARCH" in
@@ -243,7 +284,10 @@ check_dependencies() {
     if [[ ${#MISSING[@]} -gt 0 ]]; then
         print_status "Installing missing dependencies: ${MISSING[*]}..."
         case "$PKG_MGR" in
-            apt) apt-get update -qq && apt-get install -y -qq "${MISSING[@]}" ;;
+            apt)
+                wait_for_apt_lock
+                apt-get update -qq && apt-get install -y -qq "${MISSING[@]}"
+                ;;
             dnf) dnf install -y -q "${MISSING[@]}" ;;
             yum) yum install -y -q "${MISSING[@]}" ;;
         esac
@@ -417,7 +461,10 @@ install_proxy() {
         if ! command -v sshpass &>/dev/null; then
             print_status "Installing sshpass for SSH tunneling..."
             case "$PKG_MGR" in
-                apt) apt-get install -y -qq sshpass 2>/dev/null ;;
+                apt)
+                    wait_for_apt_lock
+                    apt-get install -y -qq sshpass 2>/dev/null
+                    ;;
                 dnf) dnf install -y -q sshpass 2>/dev/null ;;
                 yum) yum install -y -q sshpass 2>/dev/null ;;
             esac
