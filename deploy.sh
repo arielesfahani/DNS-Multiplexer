@@ -758,42 +758,35 @@ show_status() {
 get_public_ip() {
     local ip
 
-    # Method 1: DNS-based detection (fastest, no HTTPS needed)
+    # Method 1: Local interface with default route (best for scripted environments/proxies)
+    ip="$(ip -4 route get 8.8.8.8 2>/dev/null | grep -oP 'src \K[0-9.]+' | head -1)"
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ ! "$ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]]; then
+        echo "$ip"
+        return
+    fi
+
+    # Method 2: DNS-based detection (fastest, no HTTPS needed)
     if command -v dig &>/dev/null; then
         ip="$(dig +short myip.opendns.com @resolver1.opendns.com -4 2>/dev/null | tr -d '[:space:]')"
         if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "$ip"
             return
         fi
-        ip="$(dig +short -t txt o-o.myaddr.l.google.com @ns1.google.com -4 2>/dev/null | tr -d '"[:space:]')"
-        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "$ip"
-            return
-        fi
     fi
 
-    # Method 2: HTTP-based detection
+    # Method 3: HTTP-based detection (can be 'tricked' by proxies)
     local services=(
         "https://api.ipify.org"
-        "https://checkip.amazonaws.com"
         "https://ifconfig.me"
         "https://icanhazip.com"
-        "https://ipinfo.io/ip"
     )
     for svc in "${services[@]}"; do
         ip="$(curl -4 -s --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]')"
-        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ ! "$ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]]; then
             echo "$ip"
             return
         fi
     done
-
-    # Method 3: Default route source IP (better than hostname -I)
-    ip="$(ip -4 route get 8.8.8.8 2>/dev/null | grep -oP 'src \K[0-9.]+' | head -1)"
-    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ ! "$ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]]; then
-        echo "$ip"
-        return
-    fi
 
     # Method 4: hostname -I, skip private IPs
     while read -r candidate; do
