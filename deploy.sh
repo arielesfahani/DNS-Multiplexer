@@ -298,49 +298,66 @@ install_proxy() {
     GO_BINARY="dns-multiplexer-$BINARY_SUFFIX"
     BUILT_FROM_SOURCE=false
 
-    # Option 1: Local binary in script directory
-    if [[ -f "$SCRIPT_DIR/bin/$GO_BINARY" ]]; then
-        cp "$SCRIPT_DIR/bin/$GO_BINARY" "$INSTALL_DIR/dns-multiplexer"
-        print_status "Installed from local: $GO_BINARY"
+    # Build/Install Strategy:
+    # 1. If we are in a Git repo, build from the CURRENT local source (guarantees latest fixes)
+    # 2. If go is available but not in a repo, try to clone and build
+    # 3. Fallback to pre-built bin/ directory
+    # 4. Fallback to download from GitHub
 
-    # Option 2: Build from source (most reliable — ensures latest fixes)
-    else
-        # Install Go if not available
-        GO_BIN="go"
-        if ! command -v go &>/dev/null; then
-            print_status "Go not found. Installing Go 1.23.6 for building..."
-            local GO_ARCH="${BINARY_SUFFIX#linux-}"
-            GO_TARBALL="go1.23.6.linux-${GO_ARCH}.tar.gz"
-            GO_TMP=$(mktemp -d)
-            curl -fsSL "https://go.dev/dl/$GO_TARBALL" -o "$GO_TMP/$GO_TARBALL" || {
-                print_warning "Failed to download Go. Trying pre-built binary..."
-                rm -rf "$GO_TMP"
-                GO_BIN=""
+    GO_BIN="go"
+    if ! command -v go &>/dev/null; then
+        print_status "Go not found. Installing Go 1.23.6 for building..."
+        local GO_ARCH="${BINARY_SUFFIX#linux-}"
+        GO_TARBALL="go1.23.6.linux-${GO_ARCH}.tar.gz"
+        GO_TMP=$(mktemp -d)
+        curl -fsSL "https://go.dev/dl/$GO_TARBALL" -o "$GO_TMP/$GO_TARBALL" || {
+            print_warning "Failed to download Go. Building skipped."
+            rm -rf "$GO_TMP"
+            GO_BIN=""
+        }
+        if [[ -n "$GO_BIN" ]]; then
+            tar -C "$GO_TMP" -xzf "$GO_TMP/$GO_TARBALL"
+            GO_BIN="$GO_TMP/go/bin/go"
+            export GOPATH="$GO_TMP/gopath"
+            export GOROOT="$GO_TMP/go"
+        fi
+    fi
+
+    if [[ -n "$GO_BIN" ]]; then
+        print_status "Attempting to build dns-multiplexer from source..."
+        
+        # Choice A: Build from local directory if we are clearly in the project root
+        if [[ -f "go.mod" ]] && grep -q "DNS-Multiplexer" "go.mod"; then
+            print_status "Building from local source tree..."
+            CGO_ENABLED=0 "$GO_BIN" build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/dns-multiplexer" . 2>&1 && {
+                BUILT_FROM_SOURCE=true
+                print_status "Built from local source ✓"
             }
-            if [[ -n "$GO_BIN" ]]; then
-                tar -C "$GO_TMP" -xzf "$GO_TMP/$GO_TARBALL"
-                GO_BIN="$GO_TMP/go/bin/go"
-                export GOPATH="$GO_TMP/gopath"
-                export GOROOT="$GO_TMP/go"
-            fi
         fi
 
-        if [[ -n "$GO_BIN" ]]; then
-            print_status "Building dns-multiplexer from source..."
+        # Choice B: Clone and build if local build failed/not in repo
+        if [[ "$BUILT_FROM_SOURCE" != "true" ]]; then
             BUILD_DIR=$(mktemp -d)
             if git clone --depth 1 https://github.com/arielesfahani/DNS-Multiplexer.git "$BUILD_DIR/repo" 2>/dev/null; then
                 cd "$BUILD_DIR/repo"
                 CGO_ENABLED=0 "$GO_BIN" build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/dns-multiplexer" . 2>&1 && {
                     BUILT_FROM_SOURCE=true
-                    print_status "Built dns-multiplexer from source ✓"
-                } || {
-                    print_warning "Build failed, trying pre-built binary..."
+                    print_status "Built from GitHub clone ✓"
                 }
                 cd - >/dev/null
             fi
             rm -rf "$BUILD_DIR"
-            # Clean up temp Go install
-            [[ -d "${GO_TMP:-}" ]] && rm -rf "$GO_TMP"
+        fi
+
+        # Clean up temp Go install
+        [[ -d "${GO_TMP:-}" ]] && rm -rf "$GO_TMP"
+    fi
+
+    # Fallback to pre-built binary if build failed
+    if [[ ! -f "$INSTALL_DIR/dns-multiplexer" ]]; then
+        if [[ -f "$SCRIPT_DIR/bin/$GO_BINARY" ]]; then
+            cp "$SCRIPT_DIR/bin/$GO_BINARY" "$INSTALL_DIR/dns-multiplexer"
+            print_status "Installed from local bin/ (Fallback)"
         fi
     fi
 
