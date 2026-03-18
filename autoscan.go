@@ -110,12 +110,25 @@ func (as *AutoScanner) loop() {
 	ticker := time.NewTicker(as.interval)
 	defer ticker.Stop()
 
+	// Maintenance ticker: check pool health more frequently
+	maintainTicker := time.NewTicker(10 * time.Second)
+	defer maintainTicker.Stop()
+
 	for {
 		select {
 		case <-ticker.C:
+			slog.Info("Auto-scanner: scheduled periodic scan")
 			as.scanAndUpdate()
 		case <-as.rescanCh:
+			slog.Info("Auto-scanner: emergency rescan triggered")
 			as.scanAndUpdate()
+		case <-maintainTicker.C:
+			// If pool is thinning out (less than half of target), trigger a scan
+			healthy := as.pool.HealthyCount()
+			if as.topN > 0 && healthy < (as.topN/2) && healthy < len(as.allResolvers) {
+				slog.Warn("Auto-scanner: pool is thinning, triggering preemptive scan", "healthy", healthy, "target", as.topN)
+				as.TriggerRescan()
+			}
 		case <-as.stopCh:
 			return
 		}

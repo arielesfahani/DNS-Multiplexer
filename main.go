@@ -457,6 +457,7 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 
 	// Create pool with all resolvers
 	pool := NewResolverPool(parsed, mode, doh)
+	pool.SetHealthDomain(scanDomain)
 
 	// Cache
 	var cache *DNSCache

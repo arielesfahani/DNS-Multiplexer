@@ -96,6 +96,7 @@ func (u *UDPProxy) forward(conn *net.UDPConn, data []byte, clientAddr *net.UDPAd
 	resolver := u.pool.GetNext()
 	u.pool.MarkSent(resolver)
 
+	start := time.Now()
 	resp, err := u.pool.SendQuery(data, resolver)
 	if err != nil {
 		u.pool.MarkFailure(resolver)
@@ -105,17 +106,18 @@ func (u *UDPProxy) forward(conn *net.UDPConn, data []byte, clientAddr *net.UDPAd
 		retry := u.pool.GetNext()
 		if retry != resolver {
 			u.pool.MarkSent(retry)
+			startRetry := time.Now()
 			resp, err = u.pool.SendQuery(data, retry)
 			if err != nil {
 				u.pool.MarkFailure(retry)
 				return
 			}
-			u.pool.MarkSuccess(retry)
+			u.pool.MarkSuccessWithLatency(retry, time.Since(startRetry))
 		} else {
 			return
 		}
 	} else {
-		u.pool.MarkSuccess(resolver)
+		u.pool.MarkSuccessWithLatency(resolver, time.Since(start))
 	}
 
 	if u.cache != nil {
@@ -246,6 +248,7 @@ func (t *TCPProxy) handle(conn net.Conn) {
 	resolver := t.pool.GetNext()
 	t.pool.MarkSent(resolver)
 
+	start := time.Now()
 	resp, err := t.pool.SendQuery(data, resolver)
 	if err != nil {
 		t.pool.MarkFailure(resolver)
@@ -255,17 +258,18 @@ func (t *TCPProxy) handle(conn net.Conn) {
 		retry := t.pool.GetNext()
 		if retry != resolver {
 			t.pool.MarkSent(retry)
+			startRetry := time.Now()
 			resp, err = t.pool.SendQuery(data, retry)
 			if err != nil {
 				t.pool.MarkFailure(retry)
 				return
 			}
-			t.pool.MarkSuccess(retry)
+			t.pool.MarkSuccessWithLatency(retry, time.Since(startRetry))
 		} else {
 			return
 		}
 	} else {
-		t.pool.MarkSuccess(resolver)
+		t.pool.MarkSuccessWithLatency(resolver, time.Since(start))
 	}
 
 	if t.cache != nil {

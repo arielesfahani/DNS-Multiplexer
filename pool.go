@@ -25,9 +25,10 @@ func (r Resolver) String() string {
 }
 
 type resolverStats struct {
-	sent uint64
-	ok   uint64
-	fail uint64
+	sent    uint64
+	ok      uint64
+	fail    uint64
+	latency int64 // average latency in nanoseconds
 }
 
 // ResolverPool manages a set of upstream resolvers with health tracking.
@@ -42,6 +43,7 @@ type ResolverPool struct {
 	failStreak     map[Resolver]int
 	rrIndex        uint64
 	onResolverDown func() // called (in a goroutine) when a resolver is marked unhealthy
+	healthDomain   string // domain to use for health checks (e.g. t.example.com)
 }
 
 func NewResolverPool(resolvers []Resolver, mode string, doh bool) *ResolverPool {
@@ -53,6 +55,7 @@ func NewResolverPool(resolvers []Resolver, mode string, doh bool) *ResolverPool 
 		healthyCache: make([]Resolver, len(resolvers)),
 		stats:        make(map[Resolver]*resolverStats, len(resolvers)),
 		failStreak:   make(map[Resolver]int, len(resolvers)),
+		healthDomain: "google.com", // default
 	}
 	copy(p.healthyCache, resolvers)
 	for _, r := range resolvers {
@@ -60,6 +63,14 @@ func NewResolverPool(resolvers []Resolver, mode string, doh bool) *ResolverPool 
 		p.stats[r] = &resolverStats{}
 	}
 	return p
+}
+
+func (p *ResolverPool) SetHealthDomain(domain string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if domain != "" {
+		p.healthDomain = domain
+	}
 }
 
 func (p *ResolverPool) rebuildHealthyCache() {
@@ -81,11 +92,86 @@ func (p *ResolverPool) GetNext() Resolver {
 	healthy := p.healthyCache
 	p.mu.RUnlock()
 
+	if len(healthy) == 0 {
+		return p.resolvers[rand.Intn(len(p.resolvers))]
+	}
+
+	// Priority-based selection (Latency-aware)
+	// We pick 3 random healthy ones and select the one with the best stats.
+	// This "Power of Two Choices" variation is more robust than strict sorting.
+	candidates := 3
+	if len(healthy) < candidates {
+		candidates = len(healthy)
+	}
+
+	var best Resolver
+	var bestScore float64 = -1
+
+	for i := 0; i < candidates; i++ {
+		r := healthy[rand.Intn(len(healthy))]
+		p.mu.RLock()
+		s := p.stats[r]
+		p.mu.RUnlock()
+
+		ok := atomic.LoadUint64(&s.ok)
+		sent := atomic.LoadUint64(&s.sent)
+		lat := atomic.LoadInt64(&s.latency)
+
+		// Calculate a score: (Success Rate) / (Log(Latency))
+		// Lower latency and higher success rate = higher score.
+		successRate := 1.0
+		if sent > 0 {
+			successRate = float64(ok) / float64(sent)
+		}
+
+		latencyMs := float64(lat) / 1e6
+		if latencyMs < 1 {
+			latencyMs = 1
+		}
+
+		score := successRate / (latencyMs / 100.0) // Normalize latency for scoring
+		if score > bestScore {
+			bestScore = score
+			best = r
+		}
+	}
+
+	if bestScore > -1 {
+		return best
+	}
+
 	if p.mode == "random" {
 		return healthy[rand.Intn(len(healthy))]
 	}
 	idx := atomic.AddUint64(&p.rrIndex, 1) - 1
 	return healthy[idx%uint64(len(healthy))]
+}
+
+// MarkSuccess records a successful query and its latency.
+func (p *ResolverPool) MarkSuccessWithLatency(r Resolver, latency time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s, ok := p.stats[r]
+	if !ok {
+		return
+	}
+	atomic.AddUint64(&s.ok, 1)
+	p.failStreak[r] = 0
+
+	// Use an exponentially weighted moving average for latency
+	oldLat := atomic.LoadInt64(&s.latency)
+	newLat := latency.Nanoseconds()
+	if oldLat == 0 {
+		atomic.StoreInt64(&s.latency, newLat)
+	} else {
+		// Weight towards new: 0.2 * new + 0.8 * old
+		atomic.StoreInt64(&s.latency, (newLat*2+oldLat*8)/10)
+	}
+
+	if !p.healthy[r] {
+		p.healthy[r] = true
+		p.rebuildHealthyCache()
+	}
 }
 
 // SendQuery sends a DNS query to a resolver using the appropriate transport.
@@ -104,15 +190,7 @@ func (p *ResolverPool) MarkSent(r Resolver) {
 }
 
 func (p *ResolverPool) MarkSuccess(r Resolver) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	s := p.stats[r]
-	atomic.AddUint64(&s.ok, 1)
-	p.failStreak[r] = 0
-	if !p.healthy[r] {
-		p.healthy[r] = true
-		p.rebuildHealthyCache()
-	}
+	p.MarkSuccessWithLatency(r, 100*time.Millisecond) // fallback latency
 }
 
 func (p *ResolverPool) MarkFailure(r Resolver) {
@@ -144,8 +222,12 @@ func (p *ResolverPool) SetOnResolverDown(fn func()) {
 }
 
 func (p *ResolverPool) HealthCheck() {
+	p.mu.RLock()
+	domain := p.healthDomain
+	p.mu.RUnlock()
+
 	msg := new(dns.Msg)
-	msg.SetQuestion(dns.Fqdn("google.com"), dns.TypeA)
+	msg.SetQuestion(dns.Fqdn(domain), dns.TypeA)
 	msg.RecursionDesired = true
 	query, err := msg.Pack()
 	if err != nil {
@@ -193,11 +275,12 @@ func (p *ResolverPool) StatsString() string {
 		if !p.healthy[r] {
 			status = "DOWN"
 		}
-		result += fmt.Sprintf("  %40s [%4s] sent=%-6d ok=%-6d fail=%d\n",
+		result += fmt.Sprintf("  %40s [%4s] sent=%-6d ok=%-6d fail=%d lat=%dms\n",
 			r.String(), status,
 			atomic.LoadUint64(&s.sent),
 			atomic.LoadUint64(&s.ok),
-			atomic.LoadUint64(&s.fail))
+			atomic.LoadUint64(&s.fail),
+			atomic.LoadInt64(&s.latency)/1e6)
 	}
 	return result
 }
