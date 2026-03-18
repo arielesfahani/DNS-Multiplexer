@@ -588,22 +588,23 @@ Description=DNS Multiplexer${ENABLE_TUNNEL:+ (Tunnel Mode)}
 Documentation=https://github.com/anonvector/DNS-Multiplexer
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
 ExecStart=$EXEC_ARGS
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=10
 StandardOutput=append:$LOG_DIR/dns-mux.log
 StandardError=append:$LOG_DIR/dns-mux.log
 LimitNOFILE=65535
 
-# Security hardening
+# Security hardening & Path permissions
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
+PrivateTmp=yes
 ReadWritePaths=$LOG_DIR $CONFIG_DIR
 
 [Install]
