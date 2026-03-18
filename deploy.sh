@@ -29,6 +29,7 @@ PROXY_SCRIPT="dns-mux.py"
 RESOLVERS_FILE="resolvers.txt"
 LOG_DIR="/var/log/dns-multiplexer"
 REPO_RAW_URL="https://raw.githubusercontent.com/arielesfahani/DNS-Multiplexer/main"
+REPO_MIRROR_URL="https://raw.githubusercontents.com/arielesfahani/DNS-Multiplexer/main"
 SELF_INSTALL_PATH="/usr/local/bin/dns-mux"
 
 # Defaults
@@ -401,7 +402,22 @@ install_proxy() {
             local GO_ARCH="${BINARY_SUFFIX#linux-}"
             GO_TARBALL="go1.23.6.linux-${GO_ARCH}.tar.gz"
             GO_TMP=$(mktemp -d)
-            if curl -fsSL "https://go.dev/dl/$GO_TARBALL" -o "$GO_TMP/$GO_TARBALL"; then
+            GO_URLS=(
+                "https://go.dev/dl/$GO_TARBALL"
+                "https://golang.org/dl/$GO_TARBALL"
+                "https://mirrors.ustc.edu.cn/golang/$GO_TARBALL" 
+            )
+            
+            SUCCESS=false
+            for url in "${GO_URLS[@]}"; do
+                print_status "Trying to download Go from $url..."
+                if curl -fsSL "$url" -o "$GO_TMP/$GO_TARBALL"; then
+                    SUCCESS=true
+                    break
+                fi
+            done
+
+            if [[ "$SUCCESS" == "true" ]]; then
                 tar -C "$GO_TMP" -xzf "$GO_TMP/$GO_TARBALL"
                 GO_BIN="$GO_TMP/go/bin/go"
                 export GOPATH="$GO_TMP/gopath"
@@ -432,7 +448,8 @@ install_proxy() {
         print_status "No local binary/source found. Attempting network install..."
         
         # Try Download first as it's faster than building on low-resource VPS
-        if curl -fsSL "$REPO_RAW_URL/bin/$GO_BINARY" -o "$INSTALL_DIR/dns-multiplexer" 2>/dev/null; then
+        if curl -fsSL "$REPO_RAW_URL/bin/$GO_BINARY" -o "$INSTALL_DIR/dns-multiplexer" 2>/dev/null || \
+           curl -fsSL "$REPO_MIRROR_URL/bin/$GO_BINARY" -o "$INSTALL_DIR/dns-multiplexer" 2>/dev/null; then
             print_status "Downloaded pre-built binary ✓"
         else
             # Try Clone & Build as final fallback
