@@ -58,6 +58,7 @@ SKIP_DEPS=false
 DNSTT_DOMAIN=""
 DNSTT_PORT="5300"
 DNSTT_TARGET="127.0.0.1:1080"
+DNSTT_PRIVKEY=""
 
 # CLI flags
 AUTO_MODE=false
@@ -133,6 +134,7 @@ parse_args() {
             --domain)       shift; DNSTT_DOMAIN="$1" ;;
             --dnstt-port)   shift; DNSTT_PORT="$1" ;;
             --dnstt-target) shift; DNSTT_TARGET="$1" ;;
+            --privkey)      shift; DNSTT_PRIVKEY="$1" ;;
             --help|-h)
                 echo "Usage: dns-mux [COMMAND] [OPTIONS]"
                 echo ""
@@ -174,6 +176,7 @@ parse_args() {
                 echo "  --domain DOMAIN    Domain for dnstt-server"
                 echo "  --dnstt-port PORT  Listen port for dnstt-server (default: 5300)"
                 echo "  --dnstt-target ADDR Forward target (default: 127.0.0.1:1080)"
+                echo "  --privkey HEX      Existing private key for dnstt-server"
                 exit 0
                 ;;
             *) print_error "Unknown option: $1"; exit 1 ;;
@@ -600,8 +603,13 @@ install_dnstt_server() {
     print_status "Installed: $INSTALL_DIR/dnstt-server"
 
     # Generate keys if needed
-    if [[ ! -f "$CONFIG_DIR/server.key" ]]; then
-        print_status "Generating keypair..."
+    if [[ -n "$DNSTT_PRIVKEY" ]]; then
+        mkdir -p "$CONFIG_DIR"
+        echo "$DNSTT_PRIVKEY" > "$CONFIG_DIR/server.key"
+        chmod 600 "$CONFIG_DIR/server.key"
+        print_status "Using provided private key"
+    elif [[ ! -f "$CONFIG_DIR/server.key" ]]; then
+        print_status "Generating new keypair..."
         "$INSTALL_DIR/dnstt-server" -gen-key -privkey-file "$CONFIG_DIR/server.key" \
             -pubkey-file "$CONFIG_DIR/server.pub" 2>/dev/null || {
             print_warning "Key generation failed. You'll need to provide keys manually."
