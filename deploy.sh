@@ -55,6 +55,9 @@ TUNNEL_QUERY_SIZE=0
 TUNNEL_STEALTH=false
 DISABLE_AUTO_SCAN=false
 SKIP_DEPS=false
+DNSTT_DOMAIN=""
+DNSTT_PORT="5300"
+DNSTT_TARGET="127.0.0.1:1080"
 
 # CLI flags
 AUTO_MODE=false
@@ -127,6 +130,9 @@ parse_args() {
             --tunnel-stealth) TUNNEL_STEALTH=true ;;
             --no-scan)      DISABLE_AUTO_SCAN=true ;;
             --skip-deps)    SKIP_DEPS=true ;;
+            --domain)       shift; DNSTT_DOMAIN="$1" ;;
+            --dnstt-port)   shift; DNSTT_PORT="$1" ;;
+            --dnstt-target) shift; DNSTT_TARGET="$1" ;;
             --help|-h)
                 echo "Usage: dns-mux [COMMAND] [OPTIONS]"
                 echo ""
@@ -163,8 +169,11 @@ parse_args() {
                 echo "  --tunnel-mtu N           MTU for tunnel (default: 1280)"
                 echo "  --tunnel-query N         Max DNS query size (default: 0/auto)"
                 echo "  --tunnel-stealth         Enable stealth mode"
-                echo "  --no-scan                Disable automatic background scanning (manual mode)"
                 echo "  --skip-deps        Skip installing dependencies (curl, git, etc.)"
+                echo "  --with-dnstt       Deploy dnstt-server"
+                echo "  --domain DOMAIN    Domain for dnstt-server"
+                echo "  --dnstt-port PORT  Listen port for dnstt-server (default: 5300)"
+                echo "  --dnstt-target ADDR Forward target (default: 127.0.0.1:1080)"
                 exit 0
                 ;;
             *) print_error "Unknown option: $1"; exit 1 ;;
@@ -710,11 +719,14 @@ EOF
 
     # Optional: dnstt-server service
     if [[ "$ALSO_DEPLOY_DNSTT" == "true" && -f "$INSTALL_DIR/dnstt-server" ]]; then
-        print_question "Enter tunnel domain (e.g., t.example.com): "
-        read -r TUNNEL_DOMAIN
+        TUNNEL_DOMAIN="$DNSTT_DOMAIN"
+        if [[ -z "$TUNNEL_DOMAIN" ]] && [[ "$AUTO_MODE" != "true" ]]; then
+            print_question "Enter tunnel domain (e.g., t.example.com): "
+            read -r TUNNEL_DOMAIN
+        fi
 
         if [[ -z "$TUNNEL_DOMAIN" ]]; then
-            print_warning "No domain provided. Skipping dnstt-server service."
+            print_warning "No domain provided. Skipping dnstt-server service configuration."
         else
             cat > "$SYSTEMD_DIR/dnstt-server.service" << DNSTTEOF
 [Unit]
@@ -723,7 +735,7 @@ After=network.target dns-multiplexer.service
 
 [Service]
 Type=simple
-ExecStart=$INSTALL_DIR/dnstt-server -udp :5300 -privkey-file $CONFIG_DIR/server.key $TUNNEL_DOMAIN 127.0.0.1:1080
+ExecStart=$INSTALL_DIR/dnstt-server -udp :$DNSTT_PORT -privkey-file $CONFIG_DIR/server.key $TUNNEL_DOMAIN $DNSTT_TARGET
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:$LOG_DIR/dnstt-server.log
@@ -735,7 +747,8 @@ WantedBy=multi-user.target
 DNSTTEOF
             systemctl daemon-reload
             systemctl enable dnstt-server 2>/dev/null
-            print_status "dnstt-server service created"
+            systemctl restart dnstt-server 2>/dev/null || true
+            print_status "dnstt-server service created (listening on UDP $DNSTT_PORT)"
         fi
     fi
 }
