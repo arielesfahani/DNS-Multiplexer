@@ -298,82 +298,68 @@ install_proxy() {
     GO_BINARY="dns-multiplexer-$BINARY_SUFFIX"
     BUILT_FROM_SOURCE=false
 
-    # Build/Install Strategy:
-    # 1. If we are in a Git repo, build from the CURRENT local source (guarantees latest fixes)
-    # 2. If go is available but not in a repo, try to clone and build
-    # 3. Fallback to pre-built bin/ directory
-    # 4. Fallback to download from GitHub
-
-    GO_BIN="go"
-    if ! command -v go &>/dev/null; then
-        print_status "Go not found. Installing Go 1.23.6 for building..."
-        local GO_ARCH="${BINARY_SUFFIX#linux-}"
-        GO_TARBALL="go1.23.6.linux-${GO_ARCH}.tar.gz"
-        GO_TMP=$(mktemp -d)
-        curl -fsSL "https://go.dev/dl/$GO_TARBALL" -o "$GO_TMP/$GO_TARBALL" || {
-            print_warning "Failed to download Go. Building skipped."
-            rm -rf "$GO_TMP"
-            GO_BIN=""
-        }
-        if [[ -n "$GO_BIN" ]]; then
-            tar -C "$GO_TMP" -xzf "$GO_TMP/$GO_TARBALL"
-            GO_BIN="$GO_TMP/go/bin/go"
-            export GOPATH="$GO_TMP/gopath"
-            export GOROOT="$GO_TMP/go"
+    # 1. PRIORITY: Local binary in bin/ (Portable/Offline mode)
+    if [[ -f "$SCRIPT_DIR/bin/$GO_BINARY" ]]; then
+        cp "$SCRIPT_DIR/bin/$GO_BINARY" "$INSTALL_DIR/dns-multiplexer"
+        print_status "Installed from local bin/ (Portable/Offline Mode) ✓"
+        BUILT_FROM_SOURCE=false # technically not built *now*
+    
+    # 2. Build from local source (if we are in a Git repo/source tree)
+    elif [[ -f "go.mod" ]] && grep -q "DNS-Multiplexer" "go.mod"; then
+        GO_BIN="go"
+        if ! command -v go &>/dev/null; then
+            print_status "Go not found. Installing Go 1.23.6 for building..."
+            local GO_ARCH="${BINARY_SUFFIX#linux-}"
+            GO_TARBALL="go1.23.6.linux-${GO_ARCH}.tar.gz"
+            GO_TMP=$(mktemp -d)
+            if curl -fsSL "https://go.dev/dl/$GO_TARBALL" -o "$GO_TMP/$GO_TARBALL"; then
+                tar -C "$GO_TMP" -xzf "$GO_TMP/$GO_TARBALL"
+                GO_BIN="$GO_TMP/go/bin/go"
+                export GOPATH="$GO_TMP/gopath"
+                export GOROOT="$GO_TMP/go"
+            else
+                print_warning "Failed to download Go. Building skipped."
+                rm -rf "$GO_TMP"
+                GO_BIN=""
+            fi
         fi
-    fi
 
-    if [[ -n "$GO_BIN" ]]; then
-        print_status "Attempting to build dns-multiplexer from source..."
-        
-        # Choice A: Build from local directory if we are clearly in the project root
-        if [[ -f "go.mod" ]] && grep -q "DNS-Multiplexer" "go.mod"; then
+        if [[ -n "$GO_BIN" ]]; then
             print_status "Building from local source tree..."
-            # Delete old binary to ensure we don't use a stale one if build fails
             rm -f "$INSTALL_DIR/dns-multiplexer"
             CGO_ENABLED=0 "$GO_BIN" build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/dns-multiplexer" . 2>&1 || {
-                print_warning "Local build failed. Checking environment..."
+                print_error "Build failed! Your 1GB VPS might be out of RAM."
             }
             if [[ -f "$INSTALL_DIR/dns-multiplexer" ]]; then
                 BUILT_FROM_SOURCE=true
                 print_status "Built from local source ✓"
             fi
+            [[ -d "${GO_TMP:-}" ]] && rm -rf "$GO_TMP"
         fi
+    fi
 
-        # Choice B: Clone and build if local build failed/not in repo
-        if [[ "$BUILT_FROM_SOURCE" != "true" ]]; then
+    # 3. Last Resorts: Clone build OR Download
+    if [[ ! -f "$INSTALL_DIR/dns-multiplexer" ]]; then
+        print_status "No local binary/source found. Attempting network install..."
+        
+        # Try Download first as it's faster than building on low-resource VPS
+        if curl -fsSL "$REPO_RAW_URL/bin/$GO_BINARY" -o "$INSTALL_DIR/dns-multiplexer" 2>/dev/null; then
+            print_status "Downloaded pre-built binary ✓"
+        else
+            # Try Clone & Build as final fallback
             BUILD_DIR=$(mktemp -d)
             if git clone --depth 1 https://github.com/arielesfahani/DNS-Multiplexer.git "$BUILD_DIR/repo" 2>/dev/null; then
                 cd "$BUILD_DIR/repo"
-                rm -f "$INSTALL_DIR/dns-multiplexer"
-                CGO_ENABLED=0 "$GO_BIN" build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/dns-multiplexer" . 2>&1 || {
-                    print_warning "GitHub clone build failed."
-                }
-                if [[ -f "$INSTALL_DIR/dns-multiplexer" ]]; then
-                    BUILT_FROM_SOURCE=true
-                    print_status "Built from GitHub clone ✓"
-                fi
+                CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$INSTALL_DIR/dns-multiplexer" . 2>/dev/null && BUILT_FROM_SOURCE=true
                 cd - >/dev/null
             fi
             rm -rf "$BUILD_DIR"
         fi
-
-        # Clean up temp Go install
-        [[ -d "${GO_TMP:-}" ]] && rm -rf "$GO_TMP"
     fi
 
-    # Fallback to pre-built binary ONLY if both build attempts failed
-    if [[ "$BUILT_FROM_SOURCE" != "true" ]]; then
-        if [[ -f "$SCRIPT_DIR/bin/$GO_BINARY" ]]; then
-            cp "$SCRIPT_DIR/bin/$GO_BINARY" "$INSTALL_DIR/dns-multiplexer"
-            print_status "Installed from local bin/ (Fallback)"
-        else
-            print_status "Downloading latest pre-built binary..."
-            curl -fsSL "$REPO_RAW_URL/bin/$GO_BINARY" -o "$INSTALL_DIR/dns-multiplexer" || {
-                print_error "All installation methods failed. Please check your internet/proxy."
-                exit 1
-            }
-        fi
+    if [[ ! -f "$INSTALL_DIR/dns-multiplexer" ]]; then
+        print_error "All installation methods failed. Please ensure bin/$GO_BINARY exists for offline setup."
+        exit 1
     fi
 
     chmod +x "$INSTALL_DIR/dns-multiplexer"

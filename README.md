@@ -54,19 +54,24 @@ The service is highly tunable. Most settings are managed via the Systemd service
 - `/usr/local/bin/dns-mux`: The management utility (symlink to `deploy.sh`).
 - `/var/log/dns-multiplexer/dns-mux.log`: The source of truth for debugging.
 
-## 🚀 Deployment
+## 🚀 Deployment Options
+
+### Option 1: Zero-Internet / Offline Setup (Recommended for 1GB VPS)
+If your server has a slow connection or loses access to Go/GitHub, use this "Portable" method:
+1.  **On your laptop**: Download this repository as a ZIP file (or `git clone`).
+2.  **Upload to Server**: SCP the entire folder to your VPS.
+3.  **Install**: Run the script. It will find the pre-built binaries in `bin/` and install them INSTANTLY with **zero downloads**.
 
 ```bash
-# Pull the latest version
-git pull
+cd DNS-Multiplexer
+sudo -E bash deploy.sh --auto --tunnel --profile "slipnet://..."
+```
 
-# Run the automated installer
-sudo -E bash deploy.sh \
-  --auto --tunnel \
-  --profile "slipnet://..." \
-  --tunnel-mtu 512 \
-  --tunnel-query 50 \
-  --tunnel-stealth
+### Option 2: Automated Installation (Requires Internet)
+```bash
+# Pull and run directly
+bash <(curl -Ls https://raw.githubusercontent.com/arielesfahani/DNS-Multiplexer/main/deploy.sh) \
+  --auto --tunnel --profile "slipnet://..."
 ```
 
 ## ⚖️ License
