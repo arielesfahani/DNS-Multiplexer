@@ -24,6 +24,11 @@ type TunnelConfig struct {
 	ListenAddr string // SOCKS5 listen address for users (host:port)
 	DNSAddr    string // DNS resolver for the client (the multiplexer's listen addr)
 
+	// Advanced settings
+	MTU       int
+	QuerySize int
+	Stealth   bool
+
 	// SSH chaining (parsed from _ssh profiles)
 	SSHEnabled  bool
 	SSHUsername string
@@ -268,6 +273,16 @@ func (tm *TunnelManager) buildSlipnetArgs(listenAddr string) []string {
 		if err == nil && port != "" {
 			args = append(args, "--port", port)
 		}
+	}
+
+	if tm.config.MTU > 0 {
+		args = append(args, "--mtu", fmt.Sprintf("%d", tm.config.MTU))
+	}
+	if tm.config.QuerySize > 0 {
+		args = append(args, "--query-size", fmt.Sprintf("%d", tm.config.QuerySize))
+	}
+	if tm.config.Stealth {
+		args = append(args, "--stealth")
 	}
 
 	if tm.config.Profile != "" {

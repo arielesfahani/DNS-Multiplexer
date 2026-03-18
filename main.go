@@ -67,6 +67,9 @@ func main() {
 		scanMinScore  int
 		scanTop       int
 		scanWorkers   int
+		tunnelMTU     int
+		tunnelQuery   int
+		tunnelStealth bool
 
 		// findns integration
 		findnsBinary string
@@ -106,6 +109,9 @@ func main() {
 	flag.IntVar(&scanMinScore, "scan-min-score", 3, "Minimum tunnel compatibility score (0-6) for a resolver to be used")
 	flag.IntVar(&scanTop, "scan-top", 20, "Keep top N resolvers in active pool (0 = keep all qualifying)")
 	flag.IntVar(&scanWorkers, "scan-workers", 200, "Concurrent workers for resolver scanning")
+	flag.IntVar(&tunnelMTU, "tunnel-mtu", 1280, "MTU for the tunnel interface (default: 1280)")
+	flag.IntVar(&tunnelQuery, "tunnel-query-size", 0, "Max DNS query size (0 = auto)")
+	flag.BoolVar(&tunnelStealth, "tunnel-stealth", false, "Enable stealth mode for NoizeDNS/Sayedns")
 	flag.StringVar(&findnsBinary, "findns-binary", "findns", "Path to findns binary for resolver scanning")
 
 	flag.Parse()
@@ -157,7 +163,8 @@ func main() {
 			cover, coverMin, coverMax, healthCheck, stats,
 			tunnelType, tunnelDomain, tunnelPubkey, tunnelListen,
 			tunnelBinary, tunnelProfile, scanDomain, scanInterval,
-			scanTop, scanWorkers, findnsBinary, resolverFile)
+			scanTop, scanWorkers, tunnelMTU, tunnelQuery, tunnelStealth,
+			findnsBinary, resolverFile)
 		return
 	}
 
@@ -304,7 +311,8 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 	cover bool, coverMin, coverMax float64, healthCheck, stats bool,
 	tunnelType, tunnelDomain, tunnelPubkey, tunnelListen,
 	tunnelBinary, tunnelProfile, scanDomain, scanInterval string,
-	scanTop, scanWorkers int, findnsBinary, resolverFile string) {
+	scanTop, scanWorkers, mtu, querySize int, stealth bool,
+	findnsBinary, resolverFile string) {
 
 	// If tunnel-profile is a file path, read the URI from it
 	if tunnelProfile != "" && !strings.HasPrefix(tunnelProfile, "slipnet://") {
@@ -408,6 +416,15 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 	fmt.Printf("  Scan interval: %s\n", interval)
 	fmt.Printf("  Top N:         %d\n", scanTop)
 	fmt.Printf("  Scan workers:  %d\n", scanWorkers)
+	if mtu > 0 {
+		fmt.Printf("  Tunnel MTU:    %d\n", mtu)
+	}
+	if querySize > 0 {
+		fmt.Printf("  Query Size:    %d\n", querySize)
+	}
+	if stealth {
+		fmt.Printf("  Stealth Mode:  enabled\n")
+	}
 
 	// Resolve findns binary (try embedded, then PATH)
 	if findnsBinary == "findns" {
@@ -536,6 +553,9 @@ func runTunnelMode(parsed []Resolver, doh bool, mode, listen string, tcp, cacheE
 		TunnelType: tunnelType,
 		ListenAddr: tunnelListen,
 		DNSAddr:    listen,
+		MTU:        mtu,
+		QuerySize:  querySize,
+		Stealth:    stealth,
 	}
 	// SSH chaining for _ssh profiles
 	if parsedProfile != nil && parsedProfile.IsSSH() {

@@ -50,6 +50,9 @@ SCAN_INTERVAL="5m"
 SCAN_TOP=20
 SCAN_WORKERS=200
 SCAN_MIN_SCORE=3
+TUNNEL_MTU=0
+TUNNEL_QUERY_SIZE=0
+TUNNEL_STEALTH=false
 
 # CLI flags
 AUTO_MODE=false
@@ -112,6 +115,9 @@ parse_args() {
             --scan-top)     shift; SCAN_TOP="$1" ;;
             --scan-workers) shift; SCAN_WORKERS="$1" ;;
             --scan-min-score) shift; SCAN_MIN_SCORE="$1" ;;
+            --tunnel-mtu)    shift; TUNNEL_MTU="$1" ;;
+            --tunnel-query)  shift; TUNNEL_QUERY_SIZE="$1" ;;
+            --tunnel-stealth) TUNNEL_STEALTH=true ;;
             --help|-h)
                 echo "Usage: dns-mux [COMMAND] [OPTIONS]"
                 echo ""
@@ -144,6 +150,9 @@ parse_args() {
                 echo "  --scan-top N             Keep top N resolvers (default: 20)"
                 echo "  --scan-workers N         Concurrent scan workers (default: 200)"
                 echo "  --scan-min-score N       Min score 0-6 (default: 3)"
+                echo "  --tunnel-mtu N           MTU for tunnel (default: 1280)"
+                echo "  --tunnel-query N         Max DNS query size (default: 0/auto)"
+                echo "  --tunnel-stealth         Enable stealth mode"
                 exit 0
                 ;;
             *) print_error "Unknown option: $1"; exit 1 ;;
@@ -547,6 +556,15 @@ create_service() {
             else
                 EXEC_ARGS+=" --tunnel-profile $TUNNEL_PROFILE"
             fi
+        fi
+        if [[ "$TUNNEL_MTU" -gt 0 ]]; then
+            EXEC_ARGS+=" --tunnel-mtu $TUNNEL_MTU"
+        fi
+        if [[ "$TUNNEL_QUERY_SIZE" -gt 0 ]]; then
+            EXEC_ARGS+=" --tunnel-query-size $TUNNEL_QUERY_SIZE"
+        fi
+        if [[ "$TUNNEL_STEALTH" == "true" ]]; then
+            EXEC_ARGS+=" --tunnel-stealth"
         fi
     fi
 
