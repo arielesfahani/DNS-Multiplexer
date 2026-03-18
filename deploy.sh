@@ -54,6 +54,7 @@ TUNNEL_MTU=0
 TUNNEL_QUERY_SIZE=0
 TUNNEL_STEALTH=false
 DISABLE_AUTO_SCAN=false
+SKIP_DEPS=false
 
 # CLI flags
 AUTO_MODE=false
@@ -125,6 +126,7 @@ parse_args() {
             --tunnel-query)  shift; TUNNEL_QUERY_SIZE="$1" ;;
             --tunnel-stealth) TUNNEL_STEALTH=true ;;
             --no-scan)      DISABLE_AUTO_SCAN=true ;;
+            --skip-deps)    SKIP_DEPS=true ;;
             --help|-h)
                 echo "Usage: dns-mux [COMMAND] [OPTIONS]"
                 echo ""
@@ -162,6 +164,7 @@ parse_args() {
                 echo "  --tunnel-query N         Max DNS query size (default: 0/auto)"
                 echo "  --tunnel-stealth         Enable stealth mode"
                 echo "  --no-scan                Disable automatic background scanning (manual mode)"
+                echo "  --skip-deps        Skip installing dependencies (curl, git, etc.)"
                 exit 0
                 ;;
             *) print_error "Unknown option: $1"; exit 1 ;;
@@ -273,11 +276,26 @@ detect_arch() {
 }
 
 check_dependencies() {
+    if [[ "$SKIP_DEPS" == "true" ]]; then
+        print_status "Skipping dependency checks as requested."
+        return
+    fi
+
     local DEPS=("curl" "git" "ca-certificates")
     local MISSING=()
+    
     for dep in "${DEPS[@]}"; do
-        if ! command -v "$dep" &>/dev/null; then
-            MISSING+=("$dep")
+        if [[ "$PKG_MGR" == "apt" ]]; then
+            # More robust check for packages vs binaries
+            if ! dpkg -s "$dep" 2>/dev/null | grep -q "Status: install ok installed"; then
+                if ! command -v "$dep" &>/dev/null; then
+                    MISSING+=("$dep")
+                fi
+            fi
+        else
+            if ! command -v "$dep" &>/dev/null; then
+                MISSING+=("$dep")
+            fi
         fi
     done
 
@@ -286,7 +304,13 @@ check_dependencies() {
         case "$PKG_MGR" in
             apt)
                 wait_for_apt_lock
-                apt-get update -qq && apt-get install -y -qq "${MISSING[@]}"
+                # Remove -qq to show progress, especially helpful when stuck
+                apt-get update -q || print_warning "apt-get update failed. Continuing anyway..."
+                apt-get install -y -q "${MISSING[@]}" || {
+                    print_error "Failed to install dependencies: ${MISSING[*]}"
+                    print_warning "Try running: sudo apt-get update && sudo apt-get install -y ${MISSING[*]}"
+                    exit 1
+                }
                 ;;
             dnf) dnf install -y -q "${MISSING[@]}" ;;
             yum) yum install -y -q "${MISSING[@]}" ;;
