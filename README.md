@@ -1,141 +1,85 @@
-# DNS Multiplexer
+# DNS Multiplexer — High-Performance DNS Tunneling & Proxy
 
-DNS proxy + tunnel manager for dnstt/noizdns. Scans resolvers for tunnel compatibility, picks the best ones, and keeps your tunnel running through them.
+A robust, latency-aware DNS multiplexing service designed to bypass aggressive network censorship (like those in Iran) by intelligently routing traffic through a pool of verified domestic DNS resolvers.
 
-## Install
+## 🚀 Overview
+
+The DNS Multiplexer acts as a "Smart Bridge" between your restricted network and a remote VPN server (DNSTT/NoizeDNS). Instead of relying on a single DNS resolver that can be easily blocked or throttled, this service constantly scans thousands of Iranian DNS servers to find the fastest, most reliable "holes" in the firewall.
+
+## ✨ Key Features
+
+- **Smart Latency-Based Routing**: Automatically tracks the performance of every DNS query and prioritizes the fastest resolvers in real-time.
+- **`findns` Integration**: Uses the professional `findns` engine for **End-to-End (E2E) Verification**. It doesn't just check if a DNS is "up"—it verifies that a SOCKS5 tunnel can actually be established through it.
+- **Proactive Auto-Scanning**: Monitors your resolver pool health every 10 seconds. If the number of working resolvers drops, it triggers an emergency scan to find fresh backups before you lose connectivity.
+- **Advanced Tunnel Settings**: Full support for Android-style optimizations:
+  - **MTU Tuning**: Fragment packets to bypass DPI.
+  - **DNS Query Size Mapping**: Limit query length to avoid detection.
+  - **Stealth Mode**: Enable advanced obfuscation for NoizeDNS/Sayedns.
+- **Hot-Reloading**: Update your `resolvers.txt` on the fly without restarting the service (via SIGHUP or automated file watcher).
+- **High-Performance Go Engine**: Replaces the legacy Python proxy with a concurrent, low-memory Go implementation.
+
+## 🏗 Architecture
+
+```mermaid
+graph TD
+    User((User)) -->|SOCKS5 :1080| Tunnel[SlipNet Tunnel]
+    Tunnel -->|DNS Queries| Mux[DNS Multiplexer]
+    
+    subgraph "Smart Routing Engine"
+    Mux -->|Latency Tracking| Pool[Resolver Pool]
+    Pool -->|E2E Verified| R1[Iranian DNS 1]
+    Pool -->|E2E Verified| R2[Iranian DNS 2]
+    Pool -->|E2E Verified| R3[Iranian DNS 3]
+    end
+    
+    subgraph "Verification Engine"
+    Scanner[Auto-Scanner] -->|findns scan| Local[resolvers.txt]
+    Scanner -->|findns scan| Global[7,800+ Iranian DNS]
+    Scanner -.->|Update| Pool
+    end
+    
+    R1 & R2 & R3 -->|UDP/53| VPS[Germany VPS]
+```
+
+## 🛠 Installation
+
+The recommended way to install on a fresh Ubuntu server (even during a blackout) is via the `deploy.sh` script.
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/anonvector/DNS-Multiplexer/main/deploy.sh)
+# 1. Clone your fork
+git clone https://github.com/arielesfahani/DNS-Multiplexer.git
+cd DNS-Multiplexer
+
+# 2. Run the deployment (automatic setup)
+sudo -E bash deploy.sh \
+  --auto --tunnel \
+  --profile "slipnet://YOUR_BASE64_PROFILE" \
+  --tunnel-mtu 512 \
+  --tunnel-query 50 \
+  --tunnel-stealth
 ```
 
-Interactive menu lets you pick:
+*Note: Use `sudo -E` if you are using a proxy on your laptop to jumpstart the server.*
 
-```
-  1) Proxy only    — DNS proxy for your own dnstt/slipnet client
-  2) Tunnel mode   — Full tunnel: users connect via SOCKS5 proxy
-```
+## 6. Management Commands
 
-### Non-interactive
+The script installs a global `dns-mux` command for easy management:
 
-Tunnel mode:
+| Command | Description |
+|---------|-------------|
+| `dns-mux --status` | Show service health and active settings |
+| `dns-mux --logs` | Follow real-time logs (findns activity, etc.) |
+| `dns-mux --stats` | Show real-time latency and query stats for all resolvers |
+| `dns-mux --restart` | Restart the multiplexer and tunnel |
+| `dns-mux --scan` | Manually run a `findns` scan for a specific domain |
+| `dns-mux --uninstall` | Completely remove the service and configurations |
 
-```bash
-bash <(curl -Ls https://raw.githubusercontent.com/anonvector/DNS-Multiplexer/main/deploy.sh) \
-  --auto --tunnel --profile "slipnet://BASE64..."
-```
+## 📁 Configuration
 
-Proxy only:
+- **Service Logs**: `/var/log/dns-multiplexer/dns-mux.log`
+- **Resolvers List**: `/etc/dns-multiplexer/resolvers.txt`
+- **Service Config**: `/etc/systemd/system/dns-multiplexer.service`
 
-```bash
-bash <(curl -Ls https://raw.githubusercontent.com/anonvector/DNS-Multiplexer/main/deploy.sh) --auto
-```
+## ⚖️ License
 
-### Manual deploy (when GitHub is blocked)
-
-```bash
-scp -r dns-multiplexer/ root@SERVER:/opt/dns-multiplexer/
-ssh root@SERVER
-cd /opt/dns-multiplexer
-bash deploy.sh
-```
-
-## How it works
-
-### Tunnel mode
-
-```
-[Users] --> SOCKS5 :1080 --> [slipnet] --> DNS --> [multiplexer 127.0.0.1:53] --> [best resolver] --> [dnstt-server]
-```
-
-1. Scans all resolvers for tunnel compatibility (score 0-6)
-2. Picks the top 20 and routes tunnel DNS through them
-3. Runs `slipnet` client as SOCKS5 proxy for users
-4. Re-scans periodically and swaps in better resolvers — no restart needed
-
-### Proxy mode
-
-```
-[dnstt-client] --> DNS --> [multiplexer :53] --> [resolvers] --> [dnstt-server]
-```
-
-Load-balances DNS queries across upstream resolvers with health tracking.
-
-## Management
-
-```bash
-dns-mux --status      # Show status and logs
-dns-mux --restart     # Restart
-dns-mux --stop        # Stop
-dns-mux --logs        # Live logs
-dns-mux --uninstall   # Remove everything
-```
-
-## Run without installing
-
-```bash
-# Tunnel mode (auto-loads resolvers.txt from same directory)
-./dns-multiplexer -tunnel -tunnel-profile "slipnet://..."
-
-# Proxy mode
-./dns-multiplexer -f resolvers.txt
-
-# One-shot scan
-./dns-multiplexer -scan -scan-domain t.example.com -f resolvers.txt
-```
-
-## Resolver scanning
-
-Each resolver is tested for tunnel compatibility and scored 0-6:
-
-| Test | What it checks |
-|------|----------------|
-| NS   | NS delegation + glue records |
-| TXT  | TXT record support |
-| RND  | Random subdomain resolution |
-| DPI  | Encoded payload queries (tunnel realism) |
-| EDNS | EDNS0 buffer size (512/900/1232) |
-| NXD  | NXDOMAIN correctness |
-
-## Flags
-
-### Tunnel mode
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-tunnel` | | Enable tunnel mode |
-| `-tunnel-profile` | | `slipnet://` URI or file path |
-| `-tunnel-listen` | `0.0.0.0:1080` | SOCKS5 address for users |
-| `-tunnel-type` | `dnstt` | `dnstt` or `noizdns` (auto-detected from profile) |
-| `-tunnel-domain` | | Tunnel domain (auto-detected from profile) |
-| `-tunnel-pubkey` | | Server public key (auto-detected from profile) |
-| `-tunnel-binary` | `slipnet` | Path to slipnet binary |
-| `-scan-interval` | `5m` | Re-scan interval |
-| `-scan-min-score` | `3` | Min score (0-6) to use a resolver |
-| `-scan-top` | `20` | Keep top N resolvers |
-| `-scan-workers` | `200` | Concurrent scan workers |
-
-### General
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-listen`, `-l` | `0.0.0.0:53` | DNS proxy listen address (auto `127.0.0.1` in tunnel mode) |
-| `-resolver`, `-r` | | Upstream resolver (repeatable) |
-| `-resolvers-file`, `-f` | | Resolver list file |
-| `-doh` | | Use DoH upstream |
-| `-mode`, `-m` | `round-robin` | `round-robin` or `random` |
-| `-tcp` | | Also listen TCP |
-| `-cache` | | Enable DNS cache |
-| `-health-check` | | Periodic health checks |
-| `-stats` | | Log statistics |
-| `-cover` | | Cover traffic |
-| `-scan` | | One-shot scan mode |
-| `-scan-domain` | | Domain for scanning |
-
-## Build
-
-```bash
-go build -o dns-multiplexer .
-
-# Cross-compile for Linux
-GOOS=linux GOARCH=amd64 go build -o bin/dns-multiplexer-linux-amd64 .
-```
+MIT License. Built with ⚡ by the community for a free and open internet.
