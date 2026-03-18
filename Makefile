@@ -10,6 +10,7 @@ build:
 # Download findns binaries from GitHub releases
 download-findns:
 	@echo "Downloading findns $(FINDNS_VERSION)..."
+	mkdir -p bin
 	curl -fsSL "https://github.com/$(FINDNS_REPO)/releases/download/$(FINDNS_VERSION)/findns-linux-amd64" -o bin/findns-linux-amd64
 	curl -fsSL "https://github.com/$(FINDNS_REPO)/releases/download/$(FINDNS_VERSION)/findns-linux-arm64" -o bin/findns-linux-arm64
 	chmod +x bin/findns-linux-amd64 bin/findns-linux-arm64

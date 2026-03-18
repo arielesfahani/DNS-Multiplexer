@@ -280,7 +280,7 @@ func (as *AutoScanner) processResults(results []VerifyResult, elapsed time.Durat
 	for i := 0; i < limit && i < len(results); i++ {
 		r := results[i]
 		if r.Verified {
-			topList = append(topList, fmt.Sprintf("%s(%dms)", r.Resolver, r.LatencyMs))
+			topList = append(topList, fmt.Sprintf("%s(%dms)", r.Resolver.String(), r.LatencyMs))
 		}
 	}
 

@@ -81,7 +81,16 @@ parse_args() {
         --stop)         check_root; systemctl stop "$SERVICE_NAME" && print_status "Stopped"; exit 0 ;;
         --start)        check_root; systemctl start "$SERVICE_NAME" && print_status "Started"; exit 0 ;;
         --logs)         exec tail -f "$LOG_DIR/dns-mux.log" ;;
-        --scan)         shift; exec "$INSTALL_DIR/findns" scan "$@" ;;
+        --scan)         shift
+                        if [[ -x "$INSTALL_DIR/findns" ]]; then
+                            exec "$INSTALL_DIR/findns" scan "$@"
+                        elif [[ -x "$INSTALL_DIR/dns-multiplexer" ]]; then
+                            exec "$INSTALL_DIR/dns-multiplexer" --scan "$@"
+                        else
+                            print_error "Neither findns nor dns-multiplexer installed. Run deploy first."
+                            exit 1
+                        fi
+                        ;;
     esac
 
     while [[ $# -gt 0 ]]; do
@@ -231,13 +240,22 @@ check_python3() {
 configure_firewall() {
     print_status "Configuring firewall for port $LISTEN_PORT..."
 
+    # In tunnel mode, also open the SOCKS5 port for external users
+    local SOCKS_PORT=""
+    if [[ "$ENABLE_TUNNEL" == "true" ]]; then
+        SOCKS_PORT="${TUNNEL_LISTEN##*:}"
+        print_status "Tunnel mode: also opening SOCKS5 port $SOCKS_PORT..."
+    fi
+
     if command -v ufw &>/dev/null; then
         ufw allow "$LISTEN_PORT/udp" 2>/dev/null || true
         [[ "$ENABLE_TCP" == "true" ]] && ufw allow "$LISTEN_PORT/tcp" 2>/dev/null || true
+        [[ -n "$SOCKS_PORT" ]] && ufw allow "$SOCKS_PORT/tcp" 2>/dev/null || true
         print_status "UFW rules added"
     elif command -v firewall-cmd &>/dev/null; then
         firewall-cmd --permanent --add-port="$LISTEN_PORT/udp" 2>/dev/null || true
         [[ "$ENABLE_TCP" == "true" ]] && firewall-cmd --permanent --add-port="$LISTEN_PORT/tcp" 2>/dev/null || true
+        [[ -n "$SOCKS_PORT" ]] && firewall-cmd --permanent --add-port="$SOCKS_PORT/tcp" 2>/dev/null || true
         firewall-cmd --reload 2>/dev/null || true
         print_status "firewalld rules added"
     elif command -v iptables &>/dev/null; then
@@ -246,6 +264,10 @@ configure_firewall() {
         if [[ "$ENABLE_TCP" == "true" ]]; then
             iptables -C INPUT -p tcp --dport "$LISTEN_PORT" -j ACCEPT 2>/dev/null || \
                 iptables -I INPUT -p tcp --dport "$LISTEN_PORT" -j ACCEPT 2>/dev/null || true
+        fi
+        if [[ -n "$SOCKS_PORT" ]]; then
+            iptables -C INPUT -p tcp --dport "$SOCKS_PORT" -j ACCEPT 2>/dev/null || \
+                iptables -I INPUT -p tcp --dport "$SOCKS_PORT" -j ACCEPT 2>/dev/null || true
         fi
         if command -v iptables-save &>/dev/null; then
             iptables-save > /etc/iptables.rules 2>/dev/null || true
@@ -280,6 +302,21 @@ install_proxy() {
     chmod +x "$INSTALL_DIR/dns-multiplexer"
     print_status "Installed: $INSTALL_DIR/dns-multiplexer"
 
+    # Install findns scanner (available in all modes for --scan support)
+    FINDNS_BINARY="findns-$BINARY_SUFFIX"
+    if [[ -f "$SCRIPT_DIR/bin/$FINDNS_BINARY" ]]; then
+        cp "$SCRIPT_DIR/bin/$FINDNS_BINARY" "$INSTALL_DIR/findns"
+    else
+        print_status "Downloading $FINDNS_BINARY from GitHub..."
+        curl -fsSL "https://github.com/SamNet-dev/findns/releases/download/v0.2.2.1/$FINDNS_BINARY" -o "$INSTALL_DIR/findns" || {
+            print_warning "Failed to download findns — built-in scanner will be used instead"
+        }
+    fi
+    if [[ -f "$INSTALL_DIR/findns" ]]; then
+        chmod +x "$INSTALL_DIR/findns"
+        print_status "Installed: $INSTALL_DIR/findns"
+    fi
+
     # Install slipnet CLI if tunnel mode
     if [[ "$ENABLE_TUNNEL" == "true" ]]; then
         SLIPNET_BINARY="slipnet-$BINARY_SUFFIX"
@@ -294,21 +331,6 @@ install_proxy() {
         fi
         chmod +x "$INSTALL_DIR/slipnet"
         print_status "Installed: $INSTALL_DIR/slipnet"
-
-        # Install findns scanner
-        FINDNS_BINARY="findns-$BINARY_SUFFIX"
-        if [[ -f "$SCRIPT_DIR/bin/$FINDNS_BINARY" ]]; then
-            cp "$SCRIPT_DIR/bin/$FINDNS_BINARY" "$INSTALL_DIR/findns"
-        else
-            print_status "Downloading $FINDNS_BINARY from GitHub..."
-            curl -fsSL "https://github.com/SamNet-dev/findns/releases/download/v0.2.2.1/$FINDNS_BINARY" -o "$INSTALL_DIR/findns" || {
-                print_warning "Failed to download findns — built-in scanner will be used instead"
-            }
-        fi
-        if [[ -f "$INSTALL_DIR/findns" ]]; then
-            chmod +x "$INSTALL_DIR/findns"
-            print_status "Installed: $INSTALL_DIR/findns"
-        fi
 
         # Install sshpass for SSH-chained profiles
         if ! command -v sshpass &>/dev/null; then
