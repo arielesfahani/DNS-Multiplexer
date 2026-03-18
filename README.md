@@ -51,8 +51,17 @@ The service is highly tunable. Most settings are managed via the Systemd service
 - `/etc/dns-multiplexer/`: Configuration home.
   - `resolvers.txt`: Edit this to add/remove DNS servers.
   - `profile.conf`: Stores your `slipnet://` URI securely.
-- `/usr/local/bin/dns-mux`: The management utility (symlink to `deploy.sh`).
-- `/var/log/dns-multiplexer/dns-mux.log`: The source of truth for debugging.
+### 🔍 Deep Global Scan
+The system now includes an "Emergency Fallback". If the initial `resolvers.txt` fails to find any working DNS servers, it automatically triggers a **Deep Global Scan** across 7,800+ Iranian DNS servers to find working ones instantly.
+
+### 📊 Real-Time Visibility
+Monitoring the health of your tunnel is now easier:
+- **`verified.txt`**: See all currently active, verified resolvers in real-time at `/etc/dns-multiplexer/verified.txt`.
+- **Live Logs**: Watch the SOCKS5 handshake and tunnel performance with `sudo dns-mux --logs`.
+- **Status Dashboard**: Get success rates and latencies with `sudo dns-mux --status`.
+
+✔ /usr/local/bin/dns-mux: The management utility (symlink to `deploy.sh`).
+✔ /var/log/dns-multiplexer/dns-mux.log: The source of truth for debugging.
 
 ## 🚀 Deployment Options
 

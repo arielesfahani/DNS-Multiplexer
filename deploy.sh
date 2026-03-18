@@ -613,7 +613,8 @@ EOF
 
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME" 2>/dev/null
-    print_status "Service created: $SERVICE_NAME"
+    systemctl restart "$SERVICE_NAME"
+    print_status "Service created and restarted: $SERVICE_NAME ✓"
 
     # Optional: dnstt-server service
     if [[ "$ALSO_DEPLOY_DNSTT" == "true" && -f "$INSTALL_DIR/dnstt-server" ]]; then

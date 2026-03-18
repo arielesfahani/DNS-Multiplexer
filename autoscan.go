@@ -145,7 +145,7 @@ func (as *AutoScanner) initialScan() {
 
 		resolvers, err := as.findns.Scan(as.resolverFile)
 		if err != nil {
-			slog.Warn("findns scan failed, falling back to built-in scanner", "err", err)
+			slog.Warn("findns initial scan failed, falling back to built-in scanner", "err", err)
 		} else if len(resolvers) > 0 {
 			as.pool.UpdateResolvers(resolvers)
 			slog.Info("Auto-scan: findns initial scan complete",
@@ -155,7 +155,19 @@ func (as *AutoScanner) initialScan() {
 			as.readyOnce.Do(func() { close(as.readyCh) })
 			return
 		} else {
-			slog.Warn("findns returned no resolvers, falling back to built-in scanner")
+			slog.Warn("findns initial scan (primary list) found 0 verified resolvers. Triggering Deep Global Scan...")
+			// Trigger deep scan of the full internal list (7800+ resolvers)
+			deepResolvers, deepErr := as.findns.Scan("")
+			if deepErr == nil && len(deepResolvers) > 0 {
+				as.pool.UpdateResolvers(deepResolvers)
+				slog.Info("Auto-scan: findns DEEP GLOBAL scan complete",
+					"elapsed", time.Since(start).Round(time.Second),
+					"resolvers", len(deepResolvers),
+				)
+				as.readyOnce.Do(func() { close(as.readyCh) })
+				return
+			}
+			slog.Warn("findns Deep Global Scan failed or found no resolvers, falling back to built-in scanner")
 		}
 	}
 

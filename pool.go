@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -356,6 +357,28 @@ func (p *ResolverPool) UpdateResolvers(ordered []Resolver) {
 
 	p.rebuildHealthyCache()
 	slog.Info("Resolver pool updated", "count", len(ordered))
+
+	// Export verified resolvers to a file for user visibility
+	p.ExportVerified("/etc/dns-multiplexer/verified.txt")
+}
+
+// ExportVerified writes the list of active, verified resolvers to a file.
+func (p *ResolverPool) ExportVerified(path string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var lines string
+	for _, r := range p.resolvers {
+		if p.healthy[r] {
+			lines += r.String() + "\n"
+		}
+	}
+
+	if err := os.WriteFile(path, []byte(lines), 0644); err != nil {
+		slog.Warn("Failed to export verified resolvers", "path", path, "err", err)
+	} else {
+		slog.Info("Active verified resolvers exported", "path", path)
+	}
 }
 
 // PoolWithTimeout returns a duration used for health-check & stats loops.
